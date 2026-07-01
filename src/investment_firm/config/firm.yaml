@@ -1,0 +1,207 @@
+# Investment-firm-agents firm configuration.
+# Roles map to TIERS; a selected PROFILE resolves tier -> concrete model at runtime.
+# Roles sharing a tier are assigned models round-robin (cognitive diversity); an
+# optional `family:` hint makes that deterministic. `model:`/`tier:` on a role override
+# the profile. Edit freely — no code changes needed.
+
+default_profile: balanced
+
+profiles:
+  budget:        # minimise spend — for learning, iterating, dry runs (no Opus)
+    WORKER:    [gpt-4o-mini, gemini-2.5-flash, claude-4.5-haiku]
+    SENIOR:    [gpt-4.1-mini, gemini-2.5-flash]
+    AUTHORITY: [claude-4.5-sonnet, gpt-4.1]
+    HEAD:      [claude-4.6-sonnet]
+    web_search_max_uses: 1
+    max_parallel: 3
+    run_token_budget: 60000
+    cio_cross_check: false
+
+  balanced:      # DEFAULT — Opus 4.8 only where it counts
+    WORKER:    [claude-4.5-haiku, gpt-4o-mini, gemini-2.5-flash]
+    SENIOR:    [claude-4.6-sonnet, gpt-4.1, gemini-2.5-pro]
+    AUTHORITY: [claude-4.7-opus, gpt-5.4]
+    HEAD:      [claude-4.8-opus]
+    web_search_max_uses: 3
+    max_parallel: 5
+    run_token_budget: 150000
+    cio_cross_check: false
+
+  premium:       # max quality — the "one higher"
+    WORKER:    [claude-4.6-sonnet, gpt-4.1, gemini-2.5-pro]
+    SENIOR:    [claude-4.7-opus, gpt-5.4, gemini-3.1-pro-preview]
+    AUTHORITY: [claude-4.8-opus, gpt-5.5]
+    HEAD:      [claude-4.8-opus]
+    web_search_max_uses: 5
+    max_parallel: 8
+    run_token_budget: 400000
+    cio_cross_check: true        # CIO ruling cross-checked by gpt-5.5
+
+# ---------------------------------------------------------------------------
+# Data sources (free-only defaults; provenance mandatory).
+# ---------------------------------------------------------------------------
+data_sources:
+  market_data:
+    enabled: [yfinance, ecb, edgar, worldbank]   # all free, no key (edgar needs User-Agent)
+    optional: [fred, stooq]                       # fred=free key; stooq=no key, price cross-check
+    cross_check_prices: [yfinance, stooq]         # flag disagreements in the briefing packet
+  web_research:
+    provider: dbag_web_search    # dbag_web_search (generic flag, all models) | perplexity_sonar | none
+    # perplexity_sonar requires PERPLEXITY_API_KEY; depth = profile web_search_max_uses
+  user_context: true             # highest trust (incl. anything read off Koyfin manually)
+
+provenance:
+  tag_every_datapoint: true
+  trust_order: [user_context, edgar, market_data, web_research, model_prior]
+  require_sources_in_memo: true
+
+# ---------------------------------------------------------------------------
+# Roles. tier is required. Optional: family, model, votes, vote_weight, veto, optional.
+# ---------------------------------------------------------------------------
+roles:
+
+  # --- Governance / authority ---------------------------------------------
+  cio:
+    group: governance
+    tier: HEAD
+    mandate: Final ruling — approve/modify/reject + sizing + monitoring triggers.
+    votes: false              # rules ABOVE the vote (can override with rationale)
+    final_ruling: true
+  ic_chair:
+    group: governance
+    tier: HEAD                # cost note: override to SENIOR (or merge with cio) to save spend
+    mandate: Chairs the Investment Committee; tallies weighted votes; breaks ties.
+    votes: false
+    tally: true
+  pm:
+    group: governance
+    tier: AUTHORITY
+    mandate: Synthesize desk views into a sized proposed trade/allocation.
+    votes: true
+    vote_weight: 3
+  compliance:
+    group: governance
+    tier: SENIOR
+    mandate: Apply hard constraints (position limits, restricted list); veto/constrain.
+    votes: false
+    veto: true
+  devils_advocate:
+    group: governance
+    tier: AUTHORITY
+    mandate: Build the strongest counter-case to the emerging consensus.
+    votes: true
+    vote_weight: 1
+
+  # --- Research / idea generation -----------------------------------------
+  economist_short:
+    group: research
+    tier: WORKER
+    family: gpt
+    mandate: Short-term macro view (0-3m).
+  economist_medium:
+    group: research
+    tier: WORKER
+    family: gemini
+    mandate: Medium-term macro view (3-12m).
+  economist_long:
+    group: research
+    tier: WORKER
+    family: claude
+    mandate: Long-term macro / structural view (1y+).
+  strategist:
+    group: research
+    tier: SENIOR
+    mandate: Turn the macro views into cross-asset allocation tilts.
+    votes: true
+    vote_weight: 2
+  equity_analyst:
+    group: research
+    tier: WORKER
+    family: claude            # cognitive diversity: equity=Claude
+    mandate: Fundamental equity view.
+    votes: true
+    vote_weight: 1
+  credit_analyst:
+    group: research
+    tier: WORKER
+    family: gpt               # cognitive diversity: credit=GPT
+    mandate: Credit view — IG vs HY, issuer/spread.
+    votes: true
+    vote_weight: 1
+  rates_analyst:
+    group: research
+    tier: WORKER
+    family: gemini            # cognitive diversity: rates=Gemini
+    mandate: Rates view — curve, duration.
+    votes: true
+    vote_weight: 1
+  fx_strategist:
+    group: research
+    tier: WORKER
+    optional: true
+    mandate: FX view (enable when the decision has FX exposure).
+
+  # --- Trading desks (execution feasibility + liquidity, NOT thesis) -------
+  rates_desk:
+    group: trading
+    tier: WORKER
+    mandate: Execution feasibility + flow color for rates.
+  equity_desk:
+    group: trading
+    tier: WORKER
+    mandate: Execution feasibility + flow color for equities.
+  swaps_desk:
+    group: trading
+    tier: WORKER
+    mandate: Execution feasibility for swaps/derivatives.
+  fx_desk:
+    group: trading
+    tier: WORKER
+    optional: true
+    mandate: Execution feasibility + liquidity for FX.
+
+  # --- Quant ---------------------------------------------------------------
+  quant:
+    group: quant
+    tier: SENIOR
+    mandate: Systematic signals / factor view.
+    votes: true
+    vote_weight: 2
+
+  # --- Risk (real authority — can size down or veto) ----------------------
+  market_risk:
+    group: risk
+    tier: AUTHORITY
+    mandate: Exposures, VaR, stress/scenarios, sizing; risk-quant lives here.
+    votes: true
+    vote_weight: 2
+    veto: true
+  credit_risk:
+    group: risk
+    tier: WORKER
+    mandate: Issuer/counterparty default risk.
+  liquidity_risk:
+    group: risk
+    tier: WORKER
+    mandate: Exit feasibility vs ADV / position size.
+
+  # --- Data ----------------------------------------------------------------
+  research_librarian:
+    group: data
+    tier: WORKER
+    mandate: >
+      Build the ONE shared briefing packet from structured market_data + qualitative
+      web_research + user context. Tag every datapoint with source/as_of/trust.
+      Cross-check prices across providers. Flag unknowns as data_gaps — never invent numbers.
+
+# ---------------------------------------------------------------------------
+# Investment Committee vote.
+# Voting members are roles with votes: true; weights come from vote_weight.
+# ---------------------------------------------------------------------------
+committee:
+  chair: ic_chair
+  final_ruling: cio
+  tally_rule: weighted_majority_of_stance
+  tie_break: ic_chair
+  veto_roles: [compliance, market_risk]    # a veto forces reject/modify
+  cio_can_override_vote: true              # CIO may override, with documented rationale
