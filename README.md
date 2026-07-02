@@ -8,315 +8,167 @@ structured **Investment Committee memo** with a recommendation.
 It runs on the **Deutsche Börse AI Playground API** (one endpoint, many model families)
 and doubles as a hands-on way to learn agent **orchestration** patterns.
 
-> ⚠️ **Decision-support only.** This project produces analysis and a recommendation for a
+> **Decision-support only.** This project produces analysis and a recommendation for a
 > human to act on. It does **not** execute orders, connect to brokers/exchanges/wallets,
 > or trade automatically. Nothing here is investment advice.
 
 ---
 
-## Status: M0 (scaffold + LLM client + web-search probe)
-
-The build proceeds in gated milestones; each runs and is tested before the next.
+## Status
 
 | Milestone | What it delivers | State |
 | --- | --- | --- |
-| **M0** | Repo scaffold, self-contained LLM client, cost tracking, smoke test, web-search probe | **in progress** |
-| M1 | Base `Agent`, schemas, 3 analysts, sequential orchestrator → single-asset memo | planned |
-| M1.5 | Free data layer (yfinance/ECB/EDGAR/World Bank), provenance, SOURCES table | planned |
-| M2 | Full committee, parallel fan-out, router, budget profiles wired to the CLI | planned |
-| M3 | Embeddings memory + post-mortem, notebooks, FastAPI surface | planned |
+| **M0** | Repo scaffold, LLM client, cost tracking, smoke test, web-search probe | **done** |
+| **M1** | `Agent`, schemas, orchestrator, tools, roster | **done** |
+| **M1.5** | Free data layer (yfinance/ECB/EDGAR/World Bank), planner, memory, profiles | **done** |
+| **M1.6** | Tests + FakeLLM fixture, preview web UI, ARCHITECTURE.md | **done (this change)** |
+| M2 | Full committee vote, parallel fan-out, GUI "Run" wiring | planned |
+| M3 | Embeddings memory + post-mortem, notebooks | planned |
 
 ---
 
 ## Setup (DBAG Windows work laptop)
 
-This machine has corporate AppLocker + Zscaler. Two rules matter:
-
-- **Run pip as a module** (the `pip.exe` shim is blocked): `python -m pip ...`
-- **Use `.venv`** (project-local virtual environment).
+This machine has corporate AppLocker + Zscaler. Run pip as a module (the `pip.exe` shim
+is blocked) and use a project-local virtual environment:
 
 ```powershell
-# From the repo root
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e .        # core (M0)
-# later milestones add extras:
-# .venv\Scripts\python.exe -m pip install -e ".[data]"   # M1.5
-# .venv\Scripts\python.exe -m pip install -e ".[dev]"    # tests + notebooks
+.venv\Scripts\python.exe -m pip install -e .           # core
+.venv\Scripts\python.exe -m pip install -e ".[data]"   # data tools (yfinance etc.)
+.venv\Scripts\python.exe -m pip install -e ".[api]"    # web UI (FastAPI + uvicorn)
+.venv\Scripts\python.exe -m pip install -e ".[dev]"    # tests + notebooks
 
-# Configure your key
-copy .env.example .env        # then edit .env and paste your AI Playground key
+copy .env.example .env   # then paste your AI Playground key
 ```
 
-Get the key from the **GET API KEY** button on the
+Get the key from **GET API KEY** on the
 [DevPortal AI Playground](https://devportal.deutsche-boerse.de/ai-playground) page.
-(You can reuse the same key as the `AI-devs-playground` repo.)
 
-### Zscaler / SSL
-
-Corporate TLS inspection breaks normal verification, so `AI_PLAYGROUND_VERIFY_SSL`
-defaults to `false`. For real verification, point it at your corporate CA bundle, e.g.
-`C:\Users\wn686\corp-ca.pem`. The **first** request of a session can take ~10s (Zscaler
-tunnel cold-start); the default timeout of 60s covers it.
+**Zscaler / SSL:** `AI_PLAYGROUND_VERIFY_SSL` defaults to `false` (Zscaler-friendly).
+The first request of a session can take ~10 s (tunnel cold-start); the default timeout
+covers it.
 
 ---
 
-## M0 usage
+## Run a committee
 
 ```powershell
-# No tokens spent — connectivity + budget:
-.venv\Scripts\python.exe -m investment_firm --models     # list available models
-.venv\Scripts\python.exe -m investment_firm --tokens     # monthly token usage {used,total}
+# Full agentic run (spends tokens — uses the default "balanced" profile)
+investment-firm "Should we increase duration in the EUR rates book?"
 
-# Spends a few tokens — end-to-end smoke (one cheap gpt-4o-mini call):
-.venv\Scripts\python.exe -m investment_firm --smoke
+# Cheaper: simple mode (3 fixed analysts, no planner/tools)
+investment-firm "Is AAPL fairly valued?" --simple
 
-# Web-search probe (see below):
-.venv\Scripts\python.exe -m investment_firm --probe-websearch gpt-5.5
+# Premium profile (more powerful models)
+investment-firm "What is the outlook for EM credit?" --profile premium
+
+# Slow down between calls to stay under tokens-per-minute limits
+$env:IFA_CALL_PAUSE = "2"
+investment-firm "Assess EUR HY spread risk"
 ```
 
-Run the offline tests (no network, no tokens):
+Available profiles: `budget` | `balanced` (default) | `premium`. Override the profile
+globally with `IFA_PROFILE=budget` in `.env`.
+
+---
+
+## Web UI
 
 ```powershell
+.venv\Scripts\python.exe -m pip install -e ".[api]"
+.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app
+# open http://127.0.0.1:8000
+```
+
+The **Preview (free)** button resolves which roles and models would run for your
+question and profile — zero LLM calls, zero token spend.
+
+The **Run (spends tokens)** button is now live. After a confirmation dialog it
+POSTs to `/api/runs`, then polls every 3 seconds until the committee finishes.
+Results are shown in five tabs:
+
+- **Memo** — recommendation badge (BUY/SELL/HOLD/AVOID) and the CIO summary.
+- **Reasoning** — one card per analyst showing role, model, stance, conviction,
+  full rationale text, key risks list, and evidence/source items. This is the
+  "explain the logic" view.
+- **Briefing** — the research librarian's sourced briefing packet (full mode only;
+  skipped in simple mode).
+- **Sources** — deduplicated source list from the briefing and every analyst's
+  evidence field.
+- **Costs** — per-call token/cost table plus any warnings (JSON-fallback analysts,
+  budget limit reached).
+
+Runs respect `--profile` and `--simple` (passed via the UI controls) and the
+`IFA_CALL_PAUSE` env variable slows inter-call pacing to stay under
+tokens-per-minute limits.
+
+---
+
+## CLI (M0 utility commands)
+
+```powershell
+.venv\Scripts\python.exe -m investment_firm --models          # list available models
+.venv\Scripts\python.exe -m investment_firm --tokens          # monthly token budget
+.venv\Scripts\python.exe -m investment_firm --smoke           # end-to-end smoke (few tokens)
+.venv\Scripts\python.exe -m investment_firm --probe-websearch gemini-2.5-flash
+```
+
+---
+
+## Tests
+
+```powershell
+# Default — offline only (no network, no tokens):
 .venv\Scripts\python.exe -m pytest
-# opt-in live smoke (spends a few tokens):
+
+# Opt-in live smoke (spends a few tokens):
 .venv\Scripts\python.exe -m pytest -m live
 ```
 
----
-
-## Web search (per-model capability — partially confirmed)
-
-Web search is **not universal**: the `/ai/models` endpoint advertises a per-model
-`webSearch` boolean, and only some families support it. The DevPortal UI shows the
-`webSearch` toggle for every model, but that is just saved UI state — the backend gates
-the capability per model and rejects the flag where it is unsupported.
-
-**Confirmed (M0, via `/ai/models` capability flags + live probes):**
-
-| Family | `webSearch` | Notes |
-| --- | --- | --- |
-| **Claude** (4.5 Haiku → 4.8 Opus, Sonnet) | `true` | Supported. Client uses the native `web_search_20250305` tool. |
-| **Gemini** chat (2.5 / 3 / 3.1 / 3.5) | `true` | Supported. Generic flag **accepted**; grounding freshness still unconfirmed (see below). |
-| **GPT** (4.1, 4o-mini, 5.4, 5.5, 5-mini, 5-nano) | `false` | **Not supported.** Sending the flag returns `Unknown parameter: 'web_search'`. |
-| **Kimi K2.6, o4-mini** | `false` | Not supported. |
-| Image models (Nano Banana *) | `false` | Not applicable. |
-
-The remaining open question is only the **wire format / grounding** for the supported
-models, not *which* models — that is now settled by the capability flag:
-
-- **Hypothesis A — generic flag.** A top-level `web_search: true` is accepted by Gemini
-  (no error, normal `choices` response). What is **not** yet proven is that the returned
-  text is actually *grounded/current*: a probe on `gemini-2.5-flash` returned a stale
-  answer while `usage.total` exceeded `input+output` (hinting a search ran but wasn't
-  reflected in the text). Confirm with the F12 capture before relying on it.
-- **Hypothesis B — per-provider tool.** Claude needs the Anthropic
-  `web_search_20250305` tool (known-good, what the client uses in `auto` mode).
-
-### How this client is wired (and how to confirm)
-
-`IFA_WEBSEARCH_MODE` controls the strategy (default **`auto`**):
-
-| Mode | Behaviour |
-| --- | --- |
-| `auto` *(default)* | Claude → native `web_search_20250305` tool (known-good); every other model → the generic flag (the path under test). |
-| `generic` | **All** models → the generic flag. Set this to validate hypothesis A end-to-end. |
-| `anthropic` | Always the Anthropic tool (Claude only). |
-
-The generic flag key is `IFA_WEBSEARCH_FLAG` (default `web_search`).
-
-**To confirm the wire format (the M0 probe):**
-
-1. Open the DevPortal Playground, press **F12 → Network**.
-2. Pick a **web-search-capable** model (`webSearch: true`, e.g. **Gemini 2.5 Flash** or a
-   Claude model — *not* GPT, which is `webSearch: false`), toggle **web search ON**, and
-   send a prompt that forces a search (e.g. *"What was the latest ECB rate decision?"*).
-3. Click the `/chat/completions` request → **Payload**. Look at the JSON body:
-   - top-level `"web_search": true` / `"webSearch": true` → **hypothesis A**. Set
-     `IFA_WEBSEARCH_FLAG` to that exact key and `IFA_WEBSEARCH_MODE=generic`.
-   - a `"tools": [...]` block → **hypothesis B**. Keep `auto`; per-provider specs get
-     added as they're confirmed.
-4. Record the finding in the table below.
-
-> `.venv\Scripts\python.exe -m investment_firm --probe-websearch <model>` sends one
-> search-requiring prompt and prints the raw response shape to help you compare. It first
-> checks the model's `webSearch` flag and skips unsupported models (e.g. GPT) without
-> spending a call.
-
-### Confirmed findings
-
-| Date | Model | Mode | Result | Notes |
-| --- | --- | --- | --- | --- |
-| 2026-06-25 | gpt-5.5 | generic | ❌ unsupported | `webSearch: false`; API returns `Unknown parameter: 'web_search'`. GPT family has no web search here. |
-| 2026-06-25 | gemini-2.5-flash | generic | ⚠️ flag accepted | Generic `web_search` flag accepted (normal response), but answer was stale; grounding freshness unconfirmed — needs F12 cross-check. |
-| 2026-06-25 | (all families) | — | ✅ capability mapped | `/ai/models` `webSearch` flag: Claude + Gemini chat = `true`; GPT, Kimi, o4-mini, image models = `false`. |
+The `FakeLLM` fixture in `tests/conftest.py` monkeypatches `client.chat` with
+scriptable canned responses so the full agent/orchestrator stack is testable offline.
+204 offline tests pass; the live suite is opt-in.
 
 ---
 
-## Architecture deep dive
+## Web search (per-model capability — confirmed 2026-07-02)
 
-### Package layout (src layout)
+| Family | `webSearch` | Used in committee runs | Notes |
+| --- | --- | --- | --- |
+| **Claude** | `true` | Yes | Native `web_search_20250305` tool merged alongside function tools. Grounds (live-verified). |
+| **Gemini** chat | `true` | Yes | `web_search_options: {}` — grounds (live-verified). The old boolean flag was a no-op. |
+| **GPT** | `false` | No | Not supported on this gateway. Dropped from budget/balanced WORKER tiers; JSON output enforced via `response_format` where GPT is still used (premium, pins). |
+| **Kimi, o4-mini** | `false` | No | Not supported. |
 
-`pyproject.toml` declares a **src layout** (`[tool.setuptools.packages.find] where = ["src"]`),
-the console script `investment-firm = investment_firm.interfaces.cli:main`, and an
-`addopts = "-m 'not live'"` pytest default so live (token-spending) tests are opt-in.
+Web search is enabled per-agent (research librarian and each analyst) when the
+role's model is Claude or Gemini **and** the profile's `web_search_max_uses`
+setting in `firm.yaml` is greater than 0. Setting it to 0 disables web search
+entirely for that profile, regardless of model family.
 
-```
-investment-firm-agents/
-  pyproject.toml            # packaging, console script, pytest config, extras (data/embed/api/dev)
-  src/investment_firm/
-    __init__.py             # __version__ = "0.1.0", DISCLAIMER string (decision-support only)
-    __main__.py             # enables `python -m investment_firm` → cli.main()
-    llm/
-      config.py             # lazy env/.env accessors (loaded once at import)
-      models.py             # static model-name lists by family + helpers (is_claude/...)
-      utils.py              # format-agnostic response parsing + PlaygroundError
-      client.py             # the Playground HTTP client (chat/ask/stream/embeddings/list_models)
-      costs.py              # relative cost weights + RunTracker (per-run usage/budget)
-    interfaces/
-      cli.py                # M0 CLI: --models/--tokens/--smoke/--probe-websearch/--version
-    config/
-      firm.yaml             # roster + tiers + budget profiles + committee rules (consumed M1+)
-  tests/
-    test_client_offline.py  # offline unit tests (monkeypatched, no network)
-    test_smoke_live.py      # opt-in live smoke (marked `live`, skips without a key)
-```
+Full confirmed findings table and probe instructions: see
+[docs/ARCHITECTURE.md — Per-model web search](docs/ARCHITECTURE.md).
 
-(Later milestones add `core/` — agents, schemas, orchestrator, patterns, datasources —
-plus `notebooks/` and `examples/`.)
+---
 
-### The `llm` layer (the only working code at M0)
+## Architecture
 
-Everything today is a thin, **format-agnostic** wrapper around the single AI Playground
-endpoint. The dependency order is `config → models → utils → costs → client`, with the
-CLI sitting on top:
+For a full description of the layer diagram, the run pipeline, firm.yaml contract,
+Playground quirks, and testing philosophy, see
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-- **`config.py`** — all configuration is read **lazily through functions**
-  (`api_key()`, `base_url()`, `verify_ssl()`, `timeout()`, `profile()`,
-  `websearch_mode()`, `websearch_flag()`), never as module constants, so tests can
-  monkeypatch the environment and the process can be reconfigured at runtime. `.env` is
-  auto-loaded once at import by walking up from the file to the repo root
-  (`_load_dotenv`). `verify_ssl()` returns `False`/`True`/a CA-bundle path and defaults
-  to **`False`** for Zscaler; the urllib3 `InsecureRequestWarning` is silenced once at
-  import when verification is off. `require_api_key()` raises `ConfigError` and treats the
-  `paste-your-key-here` placeholder as missing.
-
-- **`models.py`** — static name lists per family (`CLAUDE_MODELS`, `GEMINI_MODELS`,
-  `GPT_MODELS`, `OTHER_MODELS`, `EMBEDDING_MODELS`) that *mirror the docs*; the live
-  source of truth is `/ai/models`. Defaults: `DEFAULT_CHAT_MODEL = "gpt-4o-mini"`,
-  `DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"`, `DEFAULT_MAX_TOKENS = 16000`.
-  Helpers `is_claude/is_gemini/is_gpt/family` drive the per-family branching elsewhere.
-
-- **`utils.py`** — hides the OpenAI-vs-Anthropic response shape difference. `/chat/completions`
-  is a passthrough: GPT/Gemini/Kimi return `choices[].message.content`, Claude returns
-  `content[].text`. `extract_text` reads both (and content-part lists), `extract_usage`
-  normalises `prompt/completion_tokens` (OpenAI) and `input/output_tokens` (Anthropic)
-  into `(input, output, total)`, and `is_error`/`get_error_message` detect both the
-  Anthropic (`type == "error"`) and OpenAI (`error` dict) error envelopes. `PlaygroundError`
-  is the shared exception.
-
-- **`client.py`** — two transport strategies on purpose:
-  - **`chat()` / `ask()`** use a **raw `httpx` POST** to `/chat/completions` and return
-    the *raw JSON*, so they work uniformly for every model format. `chat()` auto-injects
-    `max_tokens` (default 16000) **only for Claude** because Anthropic requires it, and
-    **omits `temperature` unless explicitly set** (some models reject non-default values).
-    Provider-specific keys go through `extra=`.
-  - **`stream_chat()` / `embeddings()`** use the **official `openai` library**
-    (`get_openai_client()` points it at the Playground base URL with the same SSL/timeout
-    config) — convenient, but assume OpenAI-format models.
-  - Capability/usage endpoints: `list_models()` (`GET /ai/models`),
-    `model_capabilities()` / `supports_websearch()` (read the per-model `webSearch` flag),
-    and `get_token_usage()` (`GET /ai/tokens` → `{used, total}`).
-  - `_apply_web_search()` implements the three web-search modes described above
-    (`auto`/`generic`/`anthropic`): Claude → native `web_search_20250305` tool, others →
-    a generic top-level flag.
-
-- **`costs.py`** — `COST_WEIGHTS` are **rough, unit-less** weights per 1,000 tokens,
-  loosely anchored to `gpt-4o-mini ≈ 0.2`, with per-family fallbacks; *nothing depends on
-  them being exact*. `estimate_cost()` = `weight * (input+output) / 1000`. `RunTracker`
-  accumulates `CallRecord`s for one run, can enforce a `token_budget` via
-  `would_exceed()`, and renders a per-agent + total table (`render_summary()`).
-
-### The CLI (`interfaces/cli.py`)
-
-`argparse`-based with one subcommand-flag each; `main()` dispatches and maps exceptions to
-exit codes (`ConfigError → 2`, `PlaygroundError → 1`). A positional `question` is a **stub
-until M2** (it just prints guidance). The disclaimer from `investment_firm.DISCLAIMER` is
-printed before any token-spending command.
-
-| Flag | Command | Spends tokens? |
-| --- | --- | --- |
-| `--models` | `cmd_models` — list `/ai/models` names | no |
-| `--tokens` | `cmd_tokens` — print `{used, total}` from `/ai/tokens` | no |
-| `--smoke` | `cmd_smoke` — list models → check budget → one cheap `gpt-4o-mini` call, tracked by `RunTracker` | yes (a few) |
-| `--probe-websearch MODEL` | `cmd_probe_websearch` — gate on `supports_websearch` (skip + exit 2 if false), else send one search prompt and dump the raw shape | yes, unless skipped |
-| `--version` | print version | no |
-
-## How a run works (workflow)
-
-### M0 — what runs today
-
-The only end-to-end path is the **smoke test** (`investment-firm --smoke`):
+Quick layout:
 
 ```
-cli.main()
-  → cmd_smoke()
-      1. client.list_models()        # GET /ai/models  (connectivity)
-      2. client.get_token_usage()    # GET /ai/tokens   (budget)
-      3. client.chat("gpt-4o-mini", [...], max_tokens=20)   # one cheap call
-           → _httpx_client() POST /chat/completions
-           → utils.extract_text / extract_usage
-           → RunTracker.record(...) → render_summary()
+src/investment_firm/
+  llm/        config, models, utils, costs, client (no core knowledge)
+  core/       roster, planner, agent, orchestrator, memory, schemas, tools
+  interfaces/ cli.py, web/app.py + static/
+  config/     firm.yaml  (roles / tiers / profiles / committee rules)
+tests/        all offline by default; FakeLLM fixture; live marker opt-in
+docs/         ARCHITECTURE.md
 ```
 
-Each API-calling command flows the same way: `config` resolves the key/URL/SSL/timeout
-lazily, `client` builds the payload (with the Claude `max_tokens` / web-search nuances),
-`utils` parses whatever shape comes back, and `costs` tallies usage. There is **no agent,
-orchestrator, or committee code yet** — those arrive at M1+.
-
-### M1+ — the intended firm workflow (configured in `firm.yaml`, not yet coded)
-
-`config/firm.yaml` already encodes the target design so the orchestrator can be built on
-top of it without code changes to add/retune roles:
-
-1. **Roles → tiers → models.** Every role has a `tier`
-   (`WORKER`/`SENIOR`/`AUTHORITY`/`HEAD`). A selected **profile** (`budget`/`balanced`/
-   `premium`, chosen by `IFA_PROFILE`, default `balanced`) resolves each tier to a concrete
-   model list; roles sharing a tier are assigned round-robin for **cognitive diversity**,
-   with an optional `family:` hint (e.g. equity=Claude, credit=GPT, rates=Gemini) or a
-   per-role `model:`/`tier:` override. Profiles also carry `web_search_max_uses`,
-   `max_parallel`, `run_token_budget`, and `cio_cross_check`.
-2. **Briefing packet.** The `research_librarian` (group `data`) builds **one shared,
-   provenance-tagged** packet from free structured sources (yfinance/ECB/EDGAR/World Bank),
-   qualitative web research, and user context — tagging every datapoint with
-   source/as_of/trust, cross-checking prices, and flagging `data_gaps` instead of inventing
-   numbers (`provenance.trust_order` ranks user_context > edgar > market_data > web_research
-   > model_prior).
-3. **Research & desks debate.** Economists (short/medium/long), strategist, equity/credit/
-   rates/(FX) analysts form theses; trading desks assess execution feasibility (not thesis);
-   the quant adds factor signals; risk (market/credit/liquidity) sizes and can veto.
-4. **Committee vote.** Voting members are roles with `votes: true`, weighted by
-   `vote_weight`; the `ic_chair` tallies `weighted_majority_of_stance` and breaks ties.
-   `veto_roles: [compliance, market_risk]` can force reject/modify.
-5. **CIO ruling.** The `cio` (tier `HEAD`) issues the final approve/modify/reject + sizing
-   + monitoring triggers and **may override the vote** with documented rationale
-   (`cio_can_override_vote: true`; in `premium`, cross-checked by gpt-5.5).
-6. **Output.** A structured Investment Committee memo with a recommendation and a SOURCES
-   table — **decision-support only; no orders are ever executed.**
-
-> No code reads `firm.yaml` yet (M0); the milestones table above tracks when each layer
-> (orchestrator, data, committee) lands.
-
-## The firm (target roster — built out M1→M2)
-
-Governance: **CIO** (final ruling), **PM** (sized proposal), **IC chair** (weighted vote),
-**Compliance** (hard limits / veto), **Devil's Advocate** (counter-case).
-Research: **3 economists** (short/medium/long), **cross-asset strategist**, **equity**,
-**credit**, **rates**, optional **FX**.
-Desks: **rates / equity / swaps / FX** (execution feasibility, not thesis).
-Quant: **quant** (factors). Risk: **market** (VaR/stress, veto), **credit**, **liquidity**.
-Data: **Research Librarian** (one shared, provenance-tagged briefing packet).
-
-Roles map to **tiers** (`WORKER/SENIOR/AUTHORITY/HEAD`); a selected **profile**
-(`budget/balanced/premium`) resolves each tier to a concrete model at runtime, so you can
-switch the whole firm between cheap and premium with one flag. See
-[src/investment_firm/config/firm.yaml](src/investment_firm/config/firm.yaml).
+The package version and DISCLAIMER live in `src/investment_firm/__init__.py`.
+Every memo carries the disclaimer; the CLI prints it before token-spending commands;
+the web UI footer displays it from `GET /api/health`.

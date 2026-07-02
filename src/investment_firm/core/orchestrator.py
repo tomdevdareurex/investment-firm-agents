@@ -14,6 +14,7 @@ runs). Everything is bounded by the profile's ``run_token_budget`` via :class:`R
 """
 from __future__ import annotations
 
+import datetime
 import json
 import time
 from typing import List, Optional, Tuple
@@ -21,6 +22,7 @@ from typing import List, Optional, Tuple
 from .. import DISCLAIMER
 from ..llm import client, config
 from ..llm.costs import RunTracker
+from ..llm.models import is_claude, is_gemini
 from ..llm.utils import extract_text, extract_usage
 from .agent import Agent, _extract_json_block
 from .memory import RunMemory
@@ -44,19 +46,28 @@ LIBRARIAN_ROLE = "research_librarian"
 PLANNER_ROLE = "cio"
 SYNTH_ROLE = "cio"
 
-_SYNTH_SYSTEM = (
+_SYNTH_SYSTEM_TMPL = (
     "You are the CIO of a buy-side investment firm. Decision-support only — never advise "
     "executing orders. You are given a question, a sourced briefing packet, and your "
     "analysts' structured views. Issue a single ruling that weighs the evidence and the "
-    "balance of views. Respond with ONLY a JSON object (no prose, no code fences):\n"
-    '{"recommendation": "BUY|SELL|HOLD|AVOID", "summary": "3-5 sentences"}'
+    "balance of views. Today's date is {date}. Your training data may be outdated — "
+    "prefer tool results, web search, and the briefing packet; if current data is "
+    "unavailable, state the gap explicitly instead of guessing. Label any figure you "
+    "could not verify via tools, web search, or the briefing as 'unverified (training "
+    "data)'. "
+    'Respond with ONLY a JSON object (no prose, no code fences):\n'
+    '{{"recommendation": "BUY|SELL|HOLD|AVOID", "summary": "3-5 sentences"}}'
 )
 
-_LIBRARIAN_TASK = (
+_LIBRARIAN_TASK_TMPL = (
     "Build a concise briefing packet for the question below. Use the data tools to fetch "
     "real, current datapoints relevant to it (prices, rates, macro indicators, filings as "
     "appropriate). Tag every datapoint with its source. Do not invent numbers; if a tool "
-    "fails, note the gap. Summarise the findings in a few bullet points."
+    "fails, note the gap. Summarise the findings in a few bullet points. "
+    "Today's date is {date}. Your training data may be outdated — prefer tool results, "
+    "web search, and the briefing packet; if current data is unavailable, state the gap "
+    "explicitly instead of guessing. Label any figure you could not verify via tools, "
+    "web search, or the briefing as 'unverified (training data)'."
 )
 
 
@@ -77,9 +88,18 @@ def _build_briefing(
     """Run the librarian agent with data tools; return ``(briefing_text, sources)``."""
     spec = _resolve(LIBRARIAN_ROLE, profile_name)
     max_uses = int(profile_setting("web_search_max_uses", 3, profile=profile_name) or 3)
+    enable_ws = (is_claude(spec.model) or is_gemini(spec.model)) and max_uses > 0
     registry = ToolRegistry(default_data_tools())
-    librarian = Agent(spec, tools=registry, max_steps=max(2, max_uses + 1))
-    view = librarian.run(f"{_LIBRARIAN_TASK}\n\nQuestion: {question}", tracker=tracker)
+    librarian = Agent(
+        spec,
+        tools=registry,
+        max_steps=max(2, max_uses + 1),
+        web_search=enable_ws,
+        web_search_max_uses=max_uses,
+    )
+    date_str = datetime.date.today().isoformat()
+    librarian_task = _LIBRARIAN_TASK_TMPL.format(date=date_str)
+    view = librarian.run(f"{librarian_task}\n\nQuestion: {question}", tracker=tracker)
     # The librarian's notes capture which tools ran and with what result.
     sources = [n for n in librarian.memory.notes]
     return view.rationale, sources
@@ -97,8 +117,9 @@ def _synthesize(
         f"Question: {question}\n\n"
         f"Briefing packet:\n{briefing or '(none)'}\n\nAnalyst views:\n{body}"
     )
+    date_str = datetime.date.today().isoformat()
     messages = [
-        {"role": "system", "content": _SYNTH_SYSTEM},
+        {"role": "system", "content": _SYNTH_SYSTEM_TMPL.format(date=date_str)},
         {"role": "user", "content": user},
     ]
     start = time.perf_counter()
@@ -165,9 +186,22 @@ def run_committee(
 
     # --- run analysts ----------------------------------------------------
     tools = None if simple else ToolRegistry(default_data_tools())
+    ws_max_uses = int(profile_setting("web_search_max_uses", 3, profile=profile_name) or 3)
     views: List[AnalystView] = []
     for name in chosen:
-        agent = Agent(specs[name], tools=tools, max_steps=1 if simple else 3)
+        spec = specs[name]
+        enable_ws = (
+            not simple
+            and (is_claude(spec.model) or is_gemini(spec.model))
+            and ws_max_uses > 0
+        )
+        agent = Agent(
+            spec,
+            tools=tools,
+            max_steps=1 if simple else 3,
+            web_search=enable_ws,
+            web_search_max_uses=ws_max_uses,
+        )
         view = agent.run(question, context=memory.context_for(name), tracker=tracker)
         views.append(view)
         memory.record_finding(name, f"{view.stance} ({view.conviction}/5) {view.rationale}")

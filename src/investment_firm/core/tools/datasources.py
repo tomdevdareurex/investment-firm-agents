@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from .base import Tool, ToolError
+from ..risk import risk_summary
 
 
 def _now_iso() -> str:
@@ -142,6 +143,66 @@ def get_company_filing(cik: str, concept: str = "Revenues") -> dict:
     }
 
 
+# --- Risk metrics (yfinance + core/risk.py) --------------------------------
+
+
+def compute_risk_metrics(ticker: str, period: str = "1y", level: float = 0.99) -> dict:
+    """Compute quantitative risk metrics for ``ticker`` using yfinance closing prices.
+
+    Fetches closing prices for the requested period, computes historical VaR,
+    parametric VaR, Expected Shortfall, annualized volatility, and max drawdown
+    via :func:`investment_firm.core.risk.risk_summary`.
+
+    All VaR / ES / volatility / drawdown values are expressed as **percent** figures
+    (e.g. ``2.31`` means 2.31%) with ``_pct`` key suffixes so the model cannot
+    misread them as raw fractions.
+
+    Args:
+        ticker: Yahoo Finance ticker symbol, e.g. ``"AAPL"`` or ``"EUFN"``.
+        period: yfinance lookback period, e.g. ``"1y"``, ``"6mo"``, ``"2y"``.
+        level: VaR / ES confidence level in (0, 1).  Default 0.99 (99%).
+
+    Returns:
+        Dict with keys: ``ticker``, ``period``, ``as_of``, ``n_obs``,
+        ``ann_vol_pct``, ``hist_var_1d_pct``, ``param_var_1d_pct``,
+        ``es_1d_pct``, ``max_drawdown_pct``, ``var_level``, ``source``.
+    """
+    _require("yfinance")
+    import yfinance as yf  # type: ignore
+
+    hist = yf.Ticker(ticker).history(period=period)
+    if hist is None or hist.empty:
+        raise ToolError(f"no price data for {ticker!r}")
+
+    close = hist["Close"]
+    prices = list(map(float, close.tolist()))
+    as_of = close.index[-1]
+    try:
+        as_of_iso = as_of.date().isoformat()
+    except AttributeError:
+        as_of_iso = str(as_of)
+
+    summary = risk_summary(prices, level=level)
+
+    def _pct(val: object) -> float:
+        """Convert a fraction to a rounded percentage."""
+        return round(float(val) * 100, 2)  # type: ignore[arg-type]
+
+    return {
+        "ticker": ticker.upper(),
+        "period": period,
+        "as_of": as_of_iso,
+        "n_obs": summary["n_obs"],
+        "ann_vol_pct": _pct(summary["ann_vol"]),
+        "hist_var_1d_pct": _pct(summary["hist_var_1d"]),
+        "param_var_1d_pct": _pct(summary["param_var_1d"]),
+        "es_1d_pct": _pct(summary["es_1d"]),
+        "max_drawdown_pct": _pct(summary["max_drawdown"]),
+        "var_level": summary["var_level"],
+        "source": "computed from yfinance closes (VaR/ES historical + parametric)",
+    }
+
+
 # --- Registry assembly ----------------------------------------------------
 
 _PRICES_TOOL = Tool(
@@ -210,6 +271,39 @@ _EDGAR_TOOL = Tool(
 )
 
 
+_RISK_TOOL = Tool(
+    name="compute_risk_metrics",
+    description=(
+        "Compute quantitative risk metrics (annualized volatility, 1-day historical VaR, "
+        "parametric VaR, Expected Shortfall, and max drawdown) for a stock/ETF ticker "
+        "using recent closing prices from Yahoo Finance. All values returned as percent "
+        "figures (e.g. ann_vol_pct=18.5 means 18.5% annualized vol). Use to support "
+        "market views with quantitative evidence."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ticker": {
+                "type": "string",
+                "description": "Yahoo Finance ticker symbol, e.g. 'AAPL' or 'EUFN'",
+            },
+            "period": {
+                "type": "string",
+                "description": "Lookback period for price history, e.g. '1y', '6mo', '2y'",
+                "default": "1y",
+            },
+            "level": {
+                "type": "number",
+                "description": "VaR/ES confidence level between 0 and 1 (default 0.99 = 99%)",
+                "default": 0.99,
+            },
+        },
+        "required": ["ticker"],
+    },
+    func=compute_risk_metrics,
+)
+
+
 def default_data_tools() -> List[Tool]:
     """Return the free read-only data tools (enabled set from firm.yaml defaults)."""
-    return [_PRICES_TOOL, _ECB_TOOL, _WORLDBANK_TOOL, _EDGAR_TOOL]
+    return [_PRICES_TOOL, _ECB_TOOL, _WORLDBANK_TOOL, _EDGAR_TOOL, _RISK_TOOL]

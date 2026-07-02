@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/c/Users/wn686/OneDrive - Deutsche Börse AG/Desktop/REPOs/investment-firm-agents/.venv/Scripts/python.exe *)",
+      "Bash(\"/c/Users/wn686/OneDrive - Deutsche Börse AG/Desktop/REPOs/investment-firm-agents/.venv/Scripts/python.exe\" -m pip install -e \".[api,dev]\" -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -x -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ --collect-only -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_web_runs.py tests/test_web_offline.py -v)",
+      "Bash(.venv/Scripts/python.exe -m pytest)",
+      "Bash(.venv/Scripts/python.exe -m pytest --tb=short)",
+      "Bash(.venv/Scripts/python.exe -m pytest -q -v tests/test_tools_format.py tests/test_core_offline.py::TestAgentResilience tests/test_core_offline.py::TestOrchestratorWebSearch tests/test_core_offline.py::TestRunsWarnings)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest -q)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(git *)"
+    ]
+  }
+}

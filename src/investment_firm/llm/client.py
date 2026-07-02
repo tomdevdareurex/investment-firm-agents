@@ -10,6 +10,7 @@ Web search is wired generic-flag-first with a per-provider fallback; see the REA
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any, Optional, Sequence, Union
@@ -23,6 +24,7 @@ from .models import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_MAX_TOKENS,
     is_claude,
+    is_gpt,
 )
 from .utils import PlaygroundError, extract_text, get_error_message, is_error
 
@@ -109,6 +111,130 @@ def _post_with_retry(url: str, payload: dict) -> httpx.Response:
     return response  # exhausted retries; return the last response for normal handling
 
 
+def _convert_tools_for_claude(tools: list) -> list:
+    """Convert OpenAI tool schemas to Anthropic format.
+
+    OpenAI:    ``{"type": "function", "function": {"name", "description", "parameters"}}``
+    Anthropic: ``{"name", "description", "input_schema": <parameters>}``
+
+    Entries already in Anthropic shape (have ``input_schema``, or non-function types like
+    ``web_search_20250305``) pass through unchanged.
+    """
+    result = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            result.append(tool)
+            continue
+        # Already Anthropic-shaped: has input_schema or is a non-function typed tool
+        if "input_schema" in tool or tool.get("type") not in (None, "function"):
+            result.append(tool)
+            continue
+        fn = tool.get("function") or {}
+        result.append({
+            "name": fn.get("name", tool.get("name", "")),
+            "description": fn.get("description", tool.get("description", "")),
+            "input_schema": fn.get("parameters", {}),
+        })
+    return result
+
+
+def _convert_tool_choice_for_claude(tool_choice: Any) -> Any:
+    """Convert an OpenAI tool_choice value to Anthropic format.
+
+    * ``"auto"``              → ``{"type": "auto"}``
+    * ``"required"`` / ``"any"`` → ``{"type": "any"}``
+    * ``"none"``              → sentinel ``None`` (caller should omit the key)
+    * dict                    → pass through unchanged
+    """
+    if isinstance(tool_choice, dict):
+        return tool_choice
+    if tool_choice == "none":
+        return None  # caller should omit the key
+    if tool_choice in ("required", "any"):
+        return {"type": "any"}
+    if tool_choice == "auto":
+        return {"type": "auto"}
+    # Unknown string — best-effort pass-through
+    return tool_choice
+
+
+def _convert_messages_for_claude(messages: list) -> list:
+    """Convert an OpenAI-format message list to Anthropic-compatible format.
+
+    * ``role="tool"`` messages → user message with ``tool_result`` content block.
+      Consecutive tool messages are merged into ONE user turn (Anthropic requires
+      role alternation).
+    * Assistant messages with ``tool_calls`` list → assistant message whose ``content``
+      is a list of ``tool_use`` blocks (plus a text block if text was present).
+    * Assistant messages whose ``content`` is already a list (raw Anthropic blocks) pass
+      through unchanged.
+    * All other messages are forwarded verbatim.
+    """
+    converted: list = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            converted.append(msg)
+            i += 1
+            continue
+
+        role = msg.get("role")
+
+        # --- tool result messages → merged user turn -------------------------
+        if role == "tool":
+            blocks = []
+            while i < len(messages) and isinstance(messages[i], dict) and messages[i].get("role") == "tool":
+                m = messages[i]
+                blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": m.get("tool_call_id", ""),
+                    "content": m.get("content", ""),
+                })
+                i += 1
+            converted.append({"role": "user", "content": blocks})
+            continue
+
+        # --- assistant with OpenAI-style tool_calls --------------------------
+        if role == "assistant":
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls")
+            # Already Anthropic-shaped (content is a list of blocks) → pass through
+            if isinstance(content, list):
+                converted.append(msg)
+                i += 1
+                continue
+            if isinstance(tool_calls, list) and tool_calls:
+                blocks = []
+                if content:  # text portion, if any
+                    blocks.append({"type": "text", "text": str(content)})
+                for call in tool_calls:
+                    fn = call.get("function", {}) if isinstance(call, dict) else {}
+                    raw_args = fn.get("arguments", "{}")
+                    try:
+                        parsed_input = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except (ValueError, TypeError):
+                        parsed_input = {}
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": call.get("id", "") if isinstance(call, dict) else "",
+                        "name": fn.get("name", ""),
+                        "input": parsed_input,
+                    })
+                converted.append({"role": "assistant", "content": blocks})
+                i += 1
+                continue
+
+        # --- all other messages pass through ---------------------------------
+        converted.append(msg)
+        i += 1
+
+    return converted
+
+
+_DEFAULT_WEBSEARCH_FLAG = "web_search"
+
+
 def _apply_web_search(
     payload: dict,
     model: str,
@@ -121,10 +247,23 @@ def _apply_web_search(
 
     Strategy (``mode``):
       * ``anthropic`` — always use the Anthropic ``web_search_20250305`` tool (Claude).
-      * ``generic``   — set a single top-level flag (``flag_key``) for any model
-                        (hypothesis A; confirm the exact key with the M0 probe).
-      * ``auto``      — Claude uses the Anthropic tool (known-good); every other model
-                        uses the generic flag (the path under test). This is the default.
+      * ``generic``   — use the generic path for any model (see below).
+      * ``auto``      — Claude uses the Anthropic tool (confirmed working); every other
+                        model uses the generic path. This is the default.
+
+    Generic path (confirmed 2026-07-02 on Deutsche Börse AI Playground):
+      When ``flag_key`` is the default (``"web_search"``), the generic path sends
+      ``payload["web_search_options"] = {}`` (OpenAI-style web-search options dict).
+      This was confirmed to ground Gemini responses (returned the current ECB deposit
+      rate of 2.25% effective 2026-06-17), whereas ``web_search=True`` (the old flag)
+      was accepted but did NOT ground the answer.
+
+      If ``IFA_WEBSEARCH_FLAG`` is set to something other than the default
+      ``"web_search"``, the custom key is used with ``True`` as an escape hatch for
+      future gateway changes.
+
+    For Claude in auto/anthropic mode, the web_search tool is APPENDED to any existing
+    ``payload["tools"]`` list (to allow function tools and web search to coexist).
     """
     mode = (mode or config.websearch_mode()).lower()
     flag_key = flag_key or config.websearch_flag()
@@ -132,16 +271,26 @@ def _apply_web_search(
     use_anthropic_tool = mode == "anthropic" or (mode == "auto" and is_claude(model))
     if use_anthropic_tool:
         payload.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
-        payload["tools"] = [
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": max_uses,
-            }
-        ]
-    else:  # generic flag (hypothesis A — unconfirmed until the M0 probe)
+        ws_tool = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": max_uses,
+        }
+        # Merge: append to existing tools list instead of overwriting
+        existing = payload.get("tools")
+        if isinstance(existing, list):
+            payload["tools"] = existing + [ws_tool]
+        else:
+            payload["tools"] = [ws_tool]
+    else:
+        # Generic path: use web_search_options={} (confirmed grounding for Gemini
+        # on this gateway 2026-07-02).  When a non-default flag key is configured
+        # via IFA_WEBSEARCH_FLAG, fall back to setting that key to True (escape hatch).
         payload.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
-        payload[flag_key] = True
+        if flag_key == _DEFAULT_WEBSEARCH_FLAG:
+            payload["web_search_options"] = {}
+        else:
+            payload[flag_key] = True
 
 
 # --- Chat -----------------------------------------------------------------
@@ -158,6 +307,7 @@ def chat(
     max_uses: int = 3,
     tools: Optional[list] = None,
     tool_choice: Optional[Any] = None,
+    json_mode: bool = False,
     extra: Optional[dict] = None,
 ) -> dict:
     """POST to ``/chat/completions`` and return the raw JSON response.
@@ -179,6 +329,9 @@ def chat(
         tools: OpenAI-format function/tool schemas the model may call. Used by the
             agent loop; supported by OpenAI-format models (GPT/Gemini/Kimi).
         tool_choice: Optional tool-choice directive (e.g. ``"auto"``).
+        json_mode: If ``True``, request structured JSON output where the model
+            family supports it (GPT: ``response_format={"type":"json_object"}``;
+            other families: no-op — they rely on prompt discipline + parse cascade).
         extra: Extra provider-specific keys merged into the payload.
 
     Returns:
@@ -201,6 +354,9 @@ def chat(
         msgs = [m for m in msgs if not (isinstance(m, dict) and m.get("role") == "system")]
         if system_parts:
             payload["system"] = "\n\n".join(p for p in system_parts if p)
+        # Convert message history to Anthropic format (tool results, tool_calls, etc.)
+        msgs = _convert_messages_for_claude(msgs)
+
     payload["messages"] = msgs
 
     if max_tokens is None and is_claude(model):
@@ -209,12 +365,27 @@ def chat(
         payload["max_tokens"] = max_tokens
     if temperature is not None:
         payload["temperature"] = temperature
+
+    # Apply function tools FIRST, then web search (web search appends for Claude).
+    if tools:
+        if is_claude(model):
+            payload["tools"] = _convert_tools_for_claude(list(tools))
+            converted_choice = _convert_tool_choice_for_claude(tool_choice)
+            if converted_choice is not None:
+                payload["tool_choice"] = converted_choice
+        else:
+            payload["tools"] = list(tools)
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
+
+    if json_mode and is_gpt(model):
+        # OpenAI JSON mode requires the word "JSON" in the prompt; the agent
+        # system prompt already demands a JSON object.
+        payload["response_format"] = {"type": "json_object"}
+
     if web_search:
         _apply_web_search(payload, model, mode=web_search_mode, max_uses=max_uses)
-    if tools:
-        payload["tools"] = list(tools)
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+
     if extra:
         payload.update(extra)
 

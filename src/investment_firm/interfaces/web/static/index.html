@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Investment Committee — IC Agents</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <span class="logo">IC Agents</span>
+      <span class="tagline">Deutsche Börse AI Playground · Decision-support only</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" aria-labelledby="preview-heading">
+      <h1 id="preview-heading">Committee Preview</h1>
+      <p class="subtitle">
+        Configure your question and profile, then preview which roles and models
+        will run — <strong>free, no tokens spent</strong>.
+      </p>
+
+      <form id="preview-form" autocomplete="off">
+        <div class="field">
+          <label for="question">Investment question</label>
+          <textarea
+            id="question"
+            name="question"
+            rows="3"
+            placeholder="e.g. Should we increase duration in the EUR rates book given the macro backdrop?"
+          ></textarea>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="profile">Profile</label>
+            <select id="profile" name="profile">
+              <option value="">loading…</option>
+            </select>
+          </div>
+
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="simple" name="simple" />
+              <span>Simple mode (3 fixed analysts, no planner)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="btn-preview" class="btn btn--primary">
+            Preview (free)
+          </button>
+          <button type="button" id="btn-run" class="btn btn--run">
+            Run (spends tokens)
+          </button>
+        </div>
+      </form>
+
+      <div id="preview-result" role="region" aria-live="polite" aria-label="Preview result"></div>
+    </section>
+
+    <!-- Results panel — hidden until a run completes -->
+    <section id="results-panel" class="card results-card" aria-labelledby="results-heading" hidden>
+      <div class="results-header">
+        <h2 id="results-heading">Committee Result</h2>
+        <div id="run-status-bar" class="run-status-bar" aria-live="polite"></div>
+      </div>
+
+      <nav class="tab-bar" role="tablist" aria-label="Result tabs">
+        <button class="tab-btn tab-btn--active" role="tab" data-tab="memo"      aria-selected="true"  aria-controls="tab-memo">Memo</button>
+        <button class="tab-btn"                 role="tab" data-tab="reasoning" aria-selected="false" aria-controls="tab-reasoning">Reasoning</button>
+        <button class="tab-btn"                 role="tab" data-tab="briefing"  aria-selected="false" aria-controls="tab-briefing">Briefing</button>
+        <button class="tab-btn"                 role="tab" data-tab="sources"   aria-selected="false" aria-controls="tab-sources">Sources</button>
+        <button class="tab-btn"                 role="tab" data-tab="costs"     aria-selected="false" aria-controls="tab-costs">Costs</button>
+      </nav>
+
+      <div id="tab-memo"      class="tab-panel tab-panel--active" role="tabpanel"></div>
+      <div id="tab-reasoning" class="tab-panel"                   role="tabpanel" hidden></div>
+      <div id="tab-briefing"  class="tab-panel"                   role="tabpanel" hidden></div>
+      <div id="tab-sources"   class="tab-panel"                   role="tabpanel" hidden></div>
+      <div id="tab-costs"     class="tab-panel"                   role="tabpanel" hidden></div>
+    </section>
+  </main>
+
+  <footer>
+    <p id="disclaimer" class="disclaimer">Loading disclaimer…</p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

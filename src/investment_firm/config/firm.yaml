@@ -8,7 +8,7 @@ default_profile: balanced
 
 profiles:
   budget:        # minimise spend — for learning, iterating, dry runs (no Opus)
-    WORKER:    [gpt-4o-mini, gemini-2.5-flash, claude-4.5-haiku]
+    WORKER:    [gemini-2.5-flash, claude-4.5-haiku]
     SENIOR:    [gpt-4.1-mini, gemini-2.5-flash]
     AUTHORITY: [claude-4.5-sonnet, gpt-4.1]
     HEAD:      [claude-4.6-sonnet]
@@ -18,7 +18,7 @@ profiles:
     cio_cross_check: false
 
   balanced:      # DEFAULT — Opus 4.8 only where it counts
-    WORKER:    [claude-4.5-haiku, gpt-4o-mini, gemini-2.5-flash]
+    WORKER:    [claude-4.5-haiku, gemini-2.5-flash]
     SENIOR:    [claude-4.6-sonnet, gpt-4.1, gemini-2.5-pro]
     AUTHORITY: [claude-4.7-opus, gpt-5.4]
     HEAD:      [claude-4.8-opus]

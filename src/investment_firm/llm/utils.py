@@ -13,10 +13,14 @@ class PlaygroundError(RuntimeError):
     """Raised when the API returns an error response."""
 
 
-def is_error(resp: dict) -> bool:
-    """True if the response looks like an API error payload."""
+def is_error(resp: object) -> bool:
+    """True if the response looks like an API error payload.
+
+    Returns ``True`` for non-dict shapes (list, str, None) because those are
+    unexpected and should be treated as failures rather than valid completions.
+    """
     if not isinstance(resp, dict):
-        return False
+        return True  # non-dict is always treated as an error
     if resp.get("type") == "error":  # Anthropic style
         return True
     if isinstance(resp.get("error"), dict):  # OpenAI style
@@ -24,8 +28,14 @@ def is_error(resp: dict) -> bool:
     return False
 
 
-def get_error_message(resp: dict) -> Optional[str]:
-    """Return a human-readable error message, or ``None`` if not an error."""
+def get_error_message(resp: object) -> Optional[str]:
+    """Return a human-readable error message, or ``None`` if not an error.
+
+    When ``resp`` is not a dict (e.g. list, str, None), returns a short
+    description of the unexpected shape instead of raising.
+    """
+    if not isinstance(resp, dict):
+        return f"unexpected response shape: {type(resp).__name__}"
     if not is_error(resp):
         return None
     err = resp.get("error", {})
@@ -34,14 +44,14 @@ def get_error_message(resp: dict) -> Optional[str]:
     return str(err)
 
 
-def extract_text(resp: dict, strict: bool = True) -> str:
+def extract_text(resp: object, strict: bool = True) -> str:
     """Return the assistant's text from any supported response shape.
 
     Handles OpenAI Chat Completions and Anthropic Messages formats as well as error
-    payloads.
+    payloads.  Non-dict responses (list, str, None) are treated as errors.
 
     Args:
-        resp: The raw JSON response dict.
+        resp: The raw JSON response (normally a dict).
         strict: If ``True`` (default), an error response raises
             :class:`PlaygroundError`; if ``False`` it returns an ``[API error] ...``
             string instead (handy when comparing many models at once).
@@ -52,6 +62,12 @@ def extract_text(resp: dict, strict: bool = True) -> str:
     Raises:
         PlaygroundError: if ``strict`` and the response is an error or has no text.
     """
+    if not isinstance(resp, dict):
+        message = get_error_message(resp) or "unexpected response shape"
+        if strict:
+            raise PlaygroundError(message)
+        return f"[API error] {message}"
+
     if is_error(resp):
         message = get_error_message(resp) or "Unknown API error"
         if strict:
@@ -94,32 +110,70 @@ def extract_tool_calls(resp: dict) -> list:
 
     Each entry is a dict like
     ``{"id": ..., "type": "function", "function": {"name": ..., "arguments": "<json>"}}``.
-    Only the OpenAI Chat Completions shape is handled (GPT/Gemini/Kimi); Anthropic
-    tool-use blocks are not parsed here (deferred).
+
+    Handles both OpenAI Chat Completions shape (GPT/Gemini/Kimi) and Anthropic format
+    (``content`` list with ``type=="tool_use"`` blocks). Anthropic blocks are normalised
+    to the OpenAI-style dict so ``core/agent.py`` needs zero changes to its dispatch.
     """
+    import json as _json
+
     if not isinstance(resp, dict):
         return []
+
+    # OpenAI / GPT / Gemini / Kimi shape
     choices = resp.get("choices")
-    if not (isinstance(choices, list) and choices):
-        return []
-    message = choices[0].get("message") or {}
-    calls = message.get("tool_calls")
-    return calls if isinstance(calls, list) else []
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") or {}
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            return calls
+
+    # Anthropic shape — top-level content list with tool_use blocks
+    content = resp.get("content")
+    if isinstance(content, list):
+        normalized = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                normalized.append({
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": _json.dumps(block.get("input", {})),
+                    },
+                })
+        return normalized
+
+    return []
 
 
 def assistant_message(resp: dict) -> Optional[dict]:
-    """Return the raw assistant ``message`` dict from an OpenAI-shaped response.
+    """Return the raw assistant ``message`` dict suitable for appending to the conversation.
 
-    Useful for appending the model's tool-call turn back into the conversation before
-    feeding tool results. Returns ``None`` for non-OpenAI shapes.
+    For OpenAI-shaped responses, returns the ``message`` dict directly (may carry
+    ``tool_calls``). For Anthropic-shaped responses (top-level ``content`` list), returns
+    ``{"role": "assistant", "content": <block list>}`` so the tool_use turn survives
+    round-trips through the client conversion.
+
+    Returns ``None`` only when the response shape is entirely unrecognised.
     """
     if not isinstance(resp, dict):
         return None
+
+    # OpenAI / GPT / Gemini / Kimi shape
     choices = resp.get("choices")
     if isinstance(choices, list) and choices:
         message = choices[0].get("message")
         if isinstance(message, dict):
             return message
+
+    # Anthropic shape — content is already a list of blocks
+    content = resp.get("content")
+    if isinstance(content, list):
+        return {"role": "assistant", "content": content}
+
     return None
 
 

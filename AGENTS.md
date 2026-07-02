@@ -1,45 +1,151 @@
 # AGENTS.md
-_Last reconciled: 2025-02-14_
+_Last reconciled: 2026-07-01 (M1.7 — Run button live, /api/runs endpoints, results tabs)_
 
 ## Overview
-- Buy-side investment firm simulated as orchestrated LLM agents; produces an Investment Committee memo (decision-support only, never executes trades).
-- Runs on the Deutsche Börse AI Playground API (one endpoint, many model families). Currently at milestone **M0** (scaffold + LLM client + web-search probe); agents/orchestrator are M1+.
+- Buy-side investment firm simulated as orchestrated LLM agents; produces an Investment
+  Committee memo (decision-support only, never executes trades).
+- Runs on the Deutsche Börse AI Playground API (one endpoint, many model families).
+- Current milestone: **M1.7** (Run button wired end-to-end; POST/GET /api/runs; results
+  panel with Memo / Reasoning / Briefing / Sources / Costs tabs).
 
 ## Architecture
-- Package `src/investment_firm` (src layout; `pyproject.toml` finds packages under `src`).
-- `llm/client.py` — thin Playground client: `chat`/`ask` (raw httpx POST, works for all model formats), `stream_chat`/`embeddings` (OpenAI lib, OpenAI-format only), `list_models`, `get_token_usage`, `model_capabilities`, `supports_websearch`, `_apply_web_search`.
-- `llm/config.py` — lazy env/`.env` accessors (`api_key`, `base_url`, `verify_ssl`, `timeout`, `profile`, `websearch_mode`, `websearch_flag`); `.env` auto-loaded at import.
-- `llm/models.py` — static model-name lists by family, `DEFAULT_CHAT_MODEL=gpt-4o-mini`, `DEFAULT_MAX_TOKENS=16000`; helpers `is_claude/is_gemini/is_gpt/family`.
-- `llm/utils.py` — format-agnostic parsing: `extract_text`, `extract_usage`, `is_error`, `PlaygroundError` (handles OpenAI `choices[].message.content` AND Anthropic `content[].text`).
-- `llm/costs.py` — unit-less relative `COST_WEIGHTS`, `estimate_cost`, `RunTracker` (per-run usage + optional token budget).
-- `interfaces/cli.py` — M0 CLI: `--models`, `--tokens`, `--smoke`, `--probe-websearch MODEL`, `--version`; positional `question` is a stub until M2.
-- `config/firm.yaml` — roster, tiers (WORKER/SENIOR/AUTHORITY/HEAD), profiles (budget/balanced/premium), data sources, committee voting rules. Consumed M1+ (no code reads it yet).
+
+```
+config/firm.yaml  →  core/roster  →  core/planner  →  core/agent  →  core/orchestrator  →  Memo
+                                                         ↑
+                                               core/tools (data tools)
+                                               core/memory (ScratchMemory, RunMemory)
+                                               core/schemas (AnalystView, Memo)
+```
+
+The `llm/` layer is at the bottom: `config → models → utils → costs → client`.
+Nothing in `llm/` knows about `core/`.
+
+## Module inventory
+
+### llm/
+- `config.py` — lazy env/.env accessors; never module constants (testable).
+- `models.py` — static model lists + `is_claude/is_gemini/is_gpt/family`.
+- `utils.py` — format-agnostic parsing (`extract_text`, `extract_usage`,
+  `extract_tool_calls` — handles both OpenAI `tool_calls` and Anthropic `tool_use`
+  blocks, normalized to OpenAI style; `assistant_message` handles both response shapes).
+- `costs.py` — `COST_WEIGHTS`, `estimate_cost`, `RunTracker` (per-run budget).
+- `client.py` — raw httpx POST to `/chat/completions`; Claude system-hoist + retries;
+  Anthropic format conversion (`_convert_tools_for_claude`, `_convert_tool_choice_for_claude`,
+  `_convert_messages_for_claude`); web-search injection (`_apply_web_search`).
+
+### core/
+- `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`;
+  tier round-robin + family hints + per-role model pin.
+- `planner.py` — `plan_roles()`: LLM call picks ordered analyst subset; falls back
+  to all candidates on unparseable JSON.
+- `agent.py` — `Agent`: tool-using observe-think-act loop; `_strip_fences`,
+  `_salvage_fields`, `_extract_json_block`; `_parse` cascade; resilience ladder
+  (error retry without tools → fallback view; finalization call on max_steps exhaust).
+  Accepts `web_search` / `web_search_max_uses` params (set by orchestrator).
+- `orchestrator.py` — `run_committee()`: briefing → plan → analysts → CIO synthesis;
+  `simple=True` for the fixed-analyst dry-run path.
+- `memory.py` — `ScratchMemory` (per-agent working notes), `RunMemory` (shared
+  briefing + colleagues' findings across agents).
+- `schemas.py` — `AnalystView`, `Memo` (Pydantic); `render()` + `all_sources()`.
+- `tools/base.py` — `Tool`, `ToolRegistry`, `ToolError`; `dispatch()` returns
+  JSON error envelopes rather than crashing the run.
+- `tools/datasources.py` — free read-only tools: `get_prices` (yfinance),
+  `get_ecb_rate`, `get_worldbank_indicator`, `get_company_filing` (EDGAR),
+  `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via `risk.py`).
+- `risk.py` — pure-stdlib quant metrics: `returns_from_prices`, `historical_var`,
+  `parametric_var`, `expected_shortfall`, `annualized_vol`, `max_drawdown`,
+  `risk_summary`. Positive values = losses (documented sign convention).
+
+### interfaces/
+- `cli.py` — argparse CLI: `--models/--tokens/--smoke/--probe-websearch/--version`
+  + positional `question` (runs the committee).
+- `web/__init__.py` — guards the fastapi import with a clear install message.
+- `web/app.py` — FastAPI app; mounts static files; includes runs router.
+  Routes: `/`, `/api/health`, `/api/profiles`, `/api/preview`.
+- `web/runs.py` — in-memory run registry (threading.Lock + daemon threads);
+  routes: `POST /api/runs`, `GET /api/runs`, `GET /api/runs/{run_id}`.
+- `web/static/` — `index.html`, `app.css`, `app.js`; plain no-build page.
+  Run button live: confirm dialog → POST /api/runs → 3s poll → tabbed results
+  (Memo / Reasoning / Briefing / Sources / Costs). All API text via textContent.
+
+### config/
+- `firm.yaml` — single source of truth for roles, tiers, profiles, data sources,
+  committee voting rules.
+
+### docs/
+- `ARCHITECTURE.md` — layer diagram, run pipeline, firm.yaml contract, Playground
+  quirks, web UI, testing philosophy, safety.
+
+## Tests
+
+```
+tests/
+  conftest.py              FakeLLM fixture + openai_text/anthropic_text/openai_tool_call builders
+  test_client_offline.py   llm/ layer (response shapes, payload construction, web-search)
+  test_core_offline.py     agent parsing, tool dispatch, memory, run_committee, planner
+  test_roster.py           resolve_profile precedence, round-robin, family, pin, errors
+  test_web_offline.py      FastAPI routes via TestClient (no network)
+  test_web_runs.py         POST/GET /api/runs — validation, happy path, error path, list
+  test_smoke_live.py       opt-in live smoke (@pytest.mark.live)
+```
+
+**FakeLLM** (`conftest.py`): monkeypatches `investment_firm.llm.client.chat` with a
+queue of canned responses. Supports OpenAI text, Anthropic text, and OpenAI tool-call
+shapes. Tests assert call counts and response parsing without any network.
+
+Run: `.venv\Scripts\python.exe -m pytest` (offline default).
 
 ## Build & run
-- Install: `python -m venv .venv` then `.venv\Scripts\python.exe -m pip install -e .` (run pip as a module — pip.exe shim is blocked by AppLocker).
-- Extras: `.[data]` (M1.5), `.[embed]`/`.[api]` (M3), `.[dev]` (pytest+jupyter).
-- Run: `python -m investment_firm --models|--tokens|--smoke|--probe-websearch <model>`; console script `investment-firm`.
-- Test: `python -m pytest` (offline default; `-m 'not live'` is auto-applied). Live API tests: `python -m pytest -m live` (spend tokens).
-- Requires Python >= 3.9.
+- Install: `python -m venv .venv` then `.venv\Scripts\python.exe -m pip install -e .`
+- Extras: `.[data]` (M1.5), `.[api]` (web UI), `.[dev]` (pytest+jupyter).
+- CLI: `investment-firm "<question>" [--profile budget|balanced|premium] [--simple]`
+- Web: `.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app`
+- Test: `.venv\Scripts\python.exe -m pytest` (offline); `-m live` to spend tokens.
 
 ## Conventions
-- Config read lazily via functions (not module constants) so tests can monkeypatch env and reconfigure at runtime.
-- `chat` auto-injects `max_tokens` only for Claude (Anthropic requires it); `temperature` omitted unless explicitly set (some models reject non-default).
-- Cost weights are rough/unit-less, anchored to gpt-4o-mini≈0.2 — for budgeting/comparison only, not real prices.
-- `/ai/models` is the live source of truth for capabilities; static lists in `models.py` just mirror docs.
-- Disclaimer string lives in `investment_firm.__init__.DISCLAIMER`; CLI prints it before token-spending commands.
+- Config read lazily via functions (not module constants) so tests can monkeypatch.
+- `client.chat` auto-hoists system messages to `payload["system"]` for Claude.
+- `_salvage_fields` rescues truncated Gemini JSON before the plain-text fallback.
+- Cost weights are rough/unit-less, anchored to gpt-4o-mini≈0.2 (budgeting only).
+- `votes`/`veto` in firm.yaml are stored in `RoleSpec` but not enforced until M2.
+- System prompts (agent, librarian, synthesis) inject today's date at call time;
+  all three instruct the model to prefer tool results / web search / briefing over
+  training data, to state gaps explicitly, and to label unverifiable figures as
+  "unverified (training data)".
+- `Agent.run` passes `json_mode=True` on every `client.chat` call; `client.chat`
+  applies `response_format={"type":"json_object"}` for GPT-family models only
+  (family branching stays in `llm/`). budget/balanced WORKER tiers contain only
+  Claude/Gemini (web-search-capable); GPT remains in SENIOR+ tiers and premium.
+
+## Gotchas for future contributors
+
+**1. Format conversion belongs only in `llm/`.** All OpenAI ↔ Anthropic format
+conversion (`_convert_tools_for_claude`, `_convert_tool_choice_for_claude`,
+`_convert_messages_for_claude`, `extract_tool_calls` Anthropic branch) lives in
+`llm/client.py` and `llm/utils.py`. **Never add model-family branching (`is_claude`,
+`is_gemini`) to `core/agent.py`.** The agent loop is intentionally format-agnostic;
+it always passes OpenAI-format structures to `client.chat`, which converts them
+transparently per-model family.
+
+**2. Web search is per-family and profile-gated.** The orchestrator enables web
+search for an agent only when (a) the role's model is Claude or Gemini (`is_claude`
+/ `is_gemini` from `llm/models.py`) AND (b) the profile's `web_search_max_uses`
+in `firm.yaml` is > 0. GPT and Kimi never receive the flag. Simple-mode runs skip
+web search entirely. For Claude, the `web_search_20250305` tool is **appended**
+(merged) to any existing function tools list — do not overwrite `payload["tools"]`.
+For Gemini (and other non-Claude models), the generic path sends
+`web_search_options: {}` — confirmed grounding on 2026-07-02; the old boolean
+`web_search: true` flag is accepted by the gateway but does NOT ground.
+
+**3. API errors must never surface as rationale.** The resilience ladder in
+`Agent.run` ensures error messages from the API are captured in `key_risks` as
+`"API error: <msg>"` and produce a fallback `AnalystView`, not raw error text in
+`rationale`. The web UI Warnings tab also flags these views. Any future changes to
+the agent loop must preserve this invariant.
 
 ## Auth & security
-- Key via `AI_PLAYGROUND_API_KEY` env / `.env` (from `.env.example`); placeholder `paste-your-key-here` treated as missing. `require_api_key()` raises `ConfigError`.
-- Base URL `AI_PLAYGROUND_BASE_URL` (default `https://devportal.deutsche-boerse.de/api`).
-- `AI_PLAYGROUND_VERIFY_SSL` defaults to **False** (Zscaler TLS inspection); accepts true/false/0/1 or a CA-bundle path. urllib3 InsecureRequestWarning is silenced when verify is False.
-- `AI_PLAYGROUND_TIMEOUT` default 60s (first request can be ~10s due to Zscaler cold-start).
-- Decision-support only: no broker/exchange/wallet connections, no order execution anywhere in the codebase.
-
-## Gotchas / notes
-- Web search is per-model: only Claude and Gemini chat report `webSearch: true`; GPT/Kimi/o4-mini return `Unknown parameter: 'web_search'`. Confirmed via `/ai/models` flags + probes.
-- `IFA_WEBSEARCH_MODE` (default `auto`): Claude→native `web_search_20250305` tool; all others→generic top-level flag (`IFA_WEBSEARCH_FLAG`, default `web_search`). Modes: `auto`|`generic`|`anthropic`.
-- Gemini accepts the generic flag but grounding/freshness is still unconfirmed (probe returned stale text); confirm wire format via DevPortal F12 → Network payload.
-- `--probe-websearch` first checks `supports_websearch`; skips unsupported models (exit code 2) without spending a call.
-- `IFA_PROFILE` (default `balanced`) selects firm.yaml profile (not yet wired into a run — M2).
-- (2026-06-27) Playground model quirks (M1.5): (1) Claude rejects a `system` message inside the `messages` array — it must be a top-level `system` field. `client.chat` now auto-hoists any leading system message(s) to `payload["system"]` for Claude models. (2) Gemini often wraps JSON in ```json fences and can truncate mid-object at the token cap. `core/agent.py` strips fences (`_strip_fences`), and `_salvage_fields` regex-extracts stance/conviction/rationale from truncated JSON before the generic fallback. Default agent max_tokens raised to 1200.
+- Key via `AI_PLAYGROUND_API_KEY` env / `.env`. `require_api_key()` raises `ConfigError`.
+- `AI_PLAYGROUND_VERIFY_SSL` defaults to `false` (Zscaler TLS inspection).
+- Decision-support only: no broker/exchange/wallet connections, no order execution.
+- `DISCLAIMER` from `investment_firm.__init__` appears in every Memo + CLI + web UI.

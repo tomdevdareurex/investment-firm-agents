@@ -9,6 +9,7 @@ returns no tool calls), it behaves like a normal single answer.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import time
@@ -21,6 +22,8 @@ from ..llm.utils import (
     extract_text,
     extract_tool_calls,
     extract_usage,
+    is_error,
+    get_error_message,
 )
 from .memory import ScratchMemory
 from .roster import RoleSpec
@@ -29,9 +32,16 @@ from .tools.base import ToolRegistry
 
 _SYSTEM_TEMPLATE = (
     "You are the {role} at a buy-side investment firm. Your mandate: {mandate}\n"
-    "This is decision-support only — never advise executing orders.\n\n"
+    "This is decision-support only — never advise executing orders.\n"
+    "Today's date is {date}. Your training data may be outdated — prefer tool results, "
+    "web search, and the briefing packet; if current data is unavailable, state the gap "
+    "explicitly instead of guessing. Label any figure you could not verify via tools, "
+    "web search, or the briefing as 'unverified (training data)'.\n\n"
     "You may call the provided tools to gather evidence before answering. Call a tool "
     "when a real, current data point would strengthen your view; do not invent numbers.\n"
+    "When tools are available, support market views with quantitative evidence — price "
+    "levels, annualized volatility, and VaR/Expected Shortfall from the risk tool — and "
+    "cite those numbers in the evidence field.\n"
     "When you are ready, answer the question from your role's perspective and respond "
     "with ONLY a JSON object (no prose, no code fences) of the form:\n"
     '{{"stance": "BULLISH|BEARISH|NEUTRAL", "conviction": 1-5, '
@@ -93,16 +103,24 @@ class Agent:
         tools: Optional[ToolRegistry] = None,
         max_steps: int = 4,
         max_tokens: int = 1200,
+        web_search: bool = False,
+        web_search_max_uses: int = 3,
     ):
         self.spec = spec
         self.tools = tools
         self.max_steps = max_steps
         self.max_tokens = max_tokens
+        self.web_search = web_search
+        self.web_search_max_uses = web_search_max_uses
         self.memory = ScratchMemory()
 
     @property
     def system_prompt(self) -> str:
-        return _SYSTEM_TEMPLATE.format(role=self.spec.name, mandate=self.spec.mandate)
+        return _SYSTEM_TEMPLATE.format(
+            role=self.spec.name,
+            mandate=self.spec.mandate,
+            date=datetime.date.today().isoformat(),
+        )
 
     def run(
         self,
@@ -133,11 +151,47 @@ class Agent:
                 max_tokens=self.max_tokens,
                 tools=tool_schemas,
                 tool_choice="auto" if tool_schemas else None,
+                web_search=self.web_search,
+                max_uses=self.web_search_max_uses,
+                json_mode=True,
             )
             elapsed = time.perf_counter() - start
             if tracker is not None:
                 inp, out, _ = extract_usage(resp)
                 tracker.record(self.spec.name, self.spec.model, inp, out, elapsed)
+
+            # Resilience: handle error responses
+            if is_error(resp):
+                err_msg = get_error_message(resp) or "unknown error"
+                self.memory.remember(f"API error: {err_msg}")
+                if tool_schemas:
+                    # Retry once without tools (degraded call)
+                    start2 = time.perf_counter()
+                    resp2 = client.chat(
+                        self.spec.model,
+                        messages,
+                        max_tokens=self.max_tokens,
+                        web_search=self.web_search,
+                        max_uses=self.web_search_max_uses,
+                        json_mode=True,
+                    )
+                    elapsed2 = time.perf_counter() - start2
+                    if tracker is not None:
+                        inp2, out2, _ = extract_usage(resp2)
+                        tracker.record(self.spec.name, self.spec.model, inp2, out2, elapsed2)
+                    if not is_error(resp2):
+                        final_text = extract_text(resp2, strict=False)
+                        break
+                    err_msg = get_error_message(resp2) or err_msg
+                # Both error (or no tools) — return fallback view
+                return AnalystView(
+                    role=self.spec.name,
+                    model=self.spec.model,
+                    stance="NEUTRAL",
+                    conviction=2,
+                    rationale="(no parseable response)",
+                    key_risks=[f"API error: {err_msg}"],
+                )
 
             calls = extract_tool_calls(resp)
             if calls and self.tools is not None:
@@ -160,6 +214,28 @@ class Agent:
 
             final_text = extract_text(resp, strict=False)
             break
+
+        # Finalization: if max_steps exhausted with model still tool-calling (empty text)
+        if not final_text and tool_schemas:
+            messages.append({
+                "role": "user",
+                "content": "Stop calling tools. Answer now with ONLY the JSON object.",
+            })
+            start_fin = time.perf_counter()
+            fin_resp = client.chat(
+                self.spec.model,
+                messages,
+                max_tokens=self.max_tokens,
+                web_search=self.web_search,
+                max_uses=self.web_search_max_uses,
+                json_mode=True,
+            )
+            elapsed_fin = time.perf_counter() - start_fin
+            if tracker is not None:
+                inp_fin, out_fin, _ = extract_usage(fin_resp)
+                tracker.record(self.spec.name, self.spec.model, inp_fin, out_fin, elapsed_fin)
+            if not is_error(fin_resp):
+                final_text = extract_text(fin_resp, strict=False)
 
         return self._parse(final_text)
 
