@@ -46,6 +46,11 @@ Nothing in `llm/` knows about `core/`.
   `{"error": {...}}` envelopes; no web search (one-time warning). Model mapping:
   `databricks-*` passthrough → `IFA_DBX_MODEL_MAP` → mechanical transform →
   live-endpoint validation → `IFA_DBX_DEFAULT_MODEL` fallback.
+- `sanitize.py` — `sanitize_openai_messages(messages, *, tools_present)` balances
+  Anthropic-style `tool_use`/`tool_result` histories for the strict Databricks
+  backend (synthesizes missing tool results, drops orphans, flattens tool
+  exchanges to text when no tools are sent). Wired in `databricks_backend.chat`;
+  the Playground path does its own conversion and never uses this.
 
 ### core/
 - `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`;
@@ -57,15 +62,31 @@ Nothing in `llm/` knows about `core/`.
   (error retry without tools → fallback view; finalization call on max_steps exhaust).
   Accepts `web_search` / `web_search_max_uses` params (set by orchestrator).
 - `orchestrator.py` — `run_committee()`: briefing → plan → analysts → CIO synthesis;
-  `simple=True` for the fixed-analyst dry-run path.
+  `simple=True` for the fixed-analyst dry-run path. Accepts `on_event=None` and
+  emits coarse `StepEvent`s (run/briefing/plan/analyst/debate/synthesis/run_done);
+  populates `Memo` CIO attribution fields.
+- `debate.py` — `run_debate()`: alternating Senior Research Bull/Bear turns
+  (`BULL_LABEL`/`BEAR_LABEL`) over the analysts' full views, then a CIO judge;
+  turn/judge failures yield explicit ERROR outcomes; accepts `on_event`.
+- `events.py` — step-event bus: `StepEvent`, `safe_emit` (swallows consumer
+  errors), `to_dict`, kind constants. Opt-in `on_event=None`; zero LLM cost.
+- `errors.py` — shared error classifier: `error_summary`, `api_error_view`,
+  `parse_error_view`. Mints explicit ERROR `AnalystView`s (grounded=False,
+  conviction 0); API errors go to `key_risks`, never rationale.
+- `consultant.py` — read-only quant consultant: `Consultant.ask()` over a
+  `RunContext` (memo + step events); default `claude-4.8-opus`
+  (`IFA_CONSULTANT_MODEL`); read-only tool subset `CONSULTANT_TOOL_NAMES`;
+  refuses trades/writes; `_finalize` never re-bills an already-generated answer.
 - `memory.py` — `ScratchMemory` (per-agent working notes), `RunMemory` (shared
   briefing + colleagues' findings across agents).
-- `schemas.py` — `AnalystView`, `Memo` (Pydantic); `render()` + `all_sources()`.
+- `schemas.py` — `AnalystView` (+ `error`, ERROR stance), `Memo` (+ CIO
+  attribution fields, ERROR recommendation); `render()` + `all_sources()`.
 - `tools/base.py` — `Tool`, `ToolRegistry`, `ToolError`; `dispatch()` returns
   JSON error envelopes rather than crashing the run.
 - `tools/datasources.py` — free read-only tools: `get_prices` (yfinance),
   `get_ecb_rate`, `get_worldbank_indicator`, `get_company_filing` (EDGAR),
-  `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via `risk.py`).
+  `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via `risk.py`),
+  `run_backtest` (read-only buy-and-hold historical compute via `risk.py`).
 - `tools/openbb_datasources.py` — optional OpenBB Platform tools (keyless providers,
   provenance-tagged like `datasources.py`): `get_yield_curve` (Fed H.15),
   `get_options_summary` (Cboe chains, summarized — never raw), `get_cpi` (OECD
@@ -82,22 +103,28 @@ Nothing in `llm/` knows about `core/`.
 
 ### interfaces/
 - `cli.py` — argparse CLI: `--models/--tokens/--smoke/--probe-websearch/--version`
-  + positional `question` (runs the committee).
+  + positional `question` (runs the committee). `--stream/--no-stream` prints
+  coarse step events; `--chat` opens a read-only consultant REPL over the run.
 - `web/__init__.py` — guards the fastapi import with a clear install message.
 - `web/app.py` — FastAPI app; mounts static files; includes runs + market routers.
   Routes: `/`, `/api/health`, `/api/profiles`, `/api/preview`,
   `GET/POST /api/backend` (LLM backend switch; unknown name → 400).
 - `web/runs.py` — in-memory run registry (threading.Lock + daemon threads);
-  routes: `POST /api/runs`, `GET /api/runs`, `GET /api/runs/{run_id}`.
+  routes: `POST /api/runs`, `GET /api/runs`, `GET /api/runs/{run_id}` (+ event_count),
+  `GET /api/runs/{run_id}/events` (SSE step-event stream, sync generator),
+  `POST /api/runs/{run_id}/chat` (read-only consultant; 409 until the run is done).
+  The registry buffers step events per run and stores the raw `Memo` + chat history.
 - `web/market.py` / `web/market_data.py` — market chart endpoints; yfinance with
   SQLite cache (`.cache/investment_firm/market_data.sqlite`, override
   `INVESTMENT_FIRM_MARKET_CACHE`); Zscaler SSL via `REQUESTS_CA_BUNDLE` /
   `CURL_CA_BUNDLE`, explicit opt-out `INVESTMENT_FIRM_MARKET_VERIFY_SSL=false`.
 - `web/static/` — `index.html`, `app.css`, `app.js`, `charts.js`, vendored
   `lightweight-charts` (candles + volume + SMA 20/50); plain no-build page.
-  Run button live: confirm dialog → POST /api/runs → 3s poll → tabbed results
-  (Memo / Reasoning / Briefing / Sources / Costs). LLM-backend dropdown in the
-  run form. All API text via textContent.
+  Run button live: confirm dialog → POST /api/runs → 3s poll + live SSE feed → tabbed
+  results (Memo / Reasoning / Debate / Briefing / Sources / Costs / Consultant). The
+  Reasoning + Debate tabs show a live step-event feed via `EventSource`; the Consultant
+  tab posts to `/api/runs/{id}/chat`. LLM-backend dropdown in the run form. All API text
+  via textContent.
 
 ### config/
 - `firm.yaml` — single source of truth for roles, tiers, profiles, data sources,
@@ -114,6 +141,10 @@ tests/
   conftest.py              FakeLLM fixture + openai_text/anthropic_text/openai_tool_call builders
   test_client_offline.py   llm/ layer (response shapes, payload construction, web-search)
   test_core_offline.py     agent parsing, tool dispatch, memory, run_committee, planner
+  test_errors.py           error classifier (api/parse ERROR views, invariants)
+  test_events.py           step-event bus (ordered kinds, safe_emit, raising consumer)
+  test_debate.py           Senior Research Bull/Bear labels, prompt carries analyst reasoning
+  test_consultant.py       read-only consultant (answers from memory, read-only subset, backtest)
   test_llm_backends.py     backend registry + Databricks adapter (SDK fully mocked)
   test_citations.py        web-search citations → Source models → memo web_sources
   test_risk.py             quant metrics (VaR/ES/vol/drawdown sign conventions)
@@ -121,7 +152,7 @@ tests/
   test_tools_format.py     tool schema/dispatch format
   test_openbb_tools.py     OpenBB tools — gating, schemas, summaries, agent loop (all mocked)
   test_web_offline.py      FastAPI routes via TestClient (no network)
-  test_web_runs.py         POST/GET /api/runs — validation, happy path, error path, list
+  test_web_runs.py         POST/GET /api/runs — validation, happy, error, list, SSE, chat, attribution
   test_web_backend.py      GET/POST /api/backend switch
   test_web_market.py       market chart endpoints + cache
   test_smoke_live.py       opt-in live smoke (@pytest.mark.live)

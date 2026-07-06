@@ -11,6 +11,7 @@ Then run::
 Guard: importing this package without fastapi installed raises a clear
 RuntimeError with install instructions rather than a cryptic ImportError.
 """
+
 from __future__ import annotations
 
 try:
@@ -19,5 +20,5 @@ except ImportError as _exc:
     raise RuntimeError(
         "The web interface requires the 'api' extra.\n"
         "Install it with:\n"
-        "    .venv\\Scripts\\python.exe -m pip install -e \".[api]\""
+        '    .venv\\Scripts\\python.exe -m pip install -e ".[api]"'
     ) from _exc

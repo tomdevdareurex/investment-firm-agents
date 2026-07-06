@@ -8,6 +8,7 @@
 Web search is wired generic-flag-first with a per-provider fallback; see the README
 "Web search" section and :func:`_apply_web_search`.
 """
+
 from __future__ import annotations
 
 import json
@@ -68,7 +69,9 @@ def _is_rate_limited(response: httpx.Response) -> bool:
         return True
     # Some gateways return 200/400 with a rate-limit message in the body.
     body = response.text.lower()
-    return "rate limit" in body or "tokens per min" in body or "too many requests" in body
+    return (
+        "rate limit" in body or "tokens per min" in body or "too many requests" in body
+    )
 
 
 def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
@@ -80,7 +83,7 @@ def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
         except ValueError:
             pass
     # Exponential backoff with a cap; tokens-per-minute windows are ~60s.
-    return min(2.0 * (2 ** attempt), 60.0)
+    return min(2.0 * (2**attempt), 60.0)
 
 
 def _max_retries() -> int:
@@ -130,11 +133,13 @@ def _convert_tools_for_claude(tools: list) -> list:
             result.append(tool)
             continue
         fn = tool.get("function") or {}
-        result.append({
-            "name": fn.get("name", tool.get("name", "")),
-            "description": fn.get("description", tool.get("description", "")),
-            "input_schema": fn.get("parameters", {}),
-        })
+        result.append(
+            {
+                "name": fn.get("name", tool.get("name", "")),
+                "description": fn.get("description", tool.get("description", "")),
+                "input_schema": fn.get("parameters", {}),
+            }
+        )
     return result
 
 
@@ -184,13 +189,19 @@ def _convert_messages_for_claude(messages: list) -> list:
         # --- tool result messages → merged user turn -------------------------
         if role == "tool":
             blocks = []
-            while i < len(messages) and isinstance(messages[i], dict) and messages[i].get("role") == "tool":
+            while (
+                i < len(messages)
+                and isinstance(messages[i], dict)
+                and messages[i].get("role") == "tool"
+            ):
                 m = messages[i]
-                blocks.append({
-                    "type": "tool_result",
-                    "tool_use_id": m.get("tool_call_id", ""),
-                    "content": m.get("content", ""),
-                })
+                blocks.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": m.get("tool_call_id", ""),
+                        "content": m.get("content", ""),
+                    }
+                )
                 i += 1
             converted.append({"role": "user", "content": blocks})
             continue
@@ -212,15 +223,21 @@ def _convert_messages_for_claude(messages: list) -> list:
                     fn = call.get("function", {}) if isinstance(call, dict) else {}
                     raw_args = fn.get("arguments", "{}")
                     try:
-                        parsed_input = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        parsed_input = (
+                            json.loads(raw_args)
+                            if isinstance(raw_args, str)
+                            else raw_args
+                        )
                     except (ValueError, TypeError):
                         parsed_input = {}
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": call.get("id", "") if isinstance(call, dict) else "",
-                        "name": fn.get("name", ""),
-                        "input": parsed_input,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": call.get("id", "") if isinstance(call, dict) else "",
+                            "name": fn.get("name", ""),
+                            "input": parsed_input,
+                        }
+                    )
                 converted.append({"role": "assistant", "content": blocks})
                 i += 1
                 continue
@@ -368,7 +385,9 @@ def chat(
             for m in msgs
             if isinstance(m, dict) and m.get("role") == "system"
         ]
-        msgs = [m for m in msgs if not (isinstance(m, dict) and m.get("role") == "system")]
+        msgs = [
+            m for m in msgs if not (isinstance(m, dict) and m.get("role") == "system")
+        ]
         if system_parts:
             payload["system"] = "\n\n".join(p for p in system_parts if p)
         # Convert message history to Anthropic format (tool results, tool_calls, etc.)
@@ -532,7 +551,9 @@ def _model_entries(models: object) -> list:
     return []
 
 
-def model_capabilities(model: str, *, models: Optional[object] = None) -> Optional[dict]:
+def model_capabilities(
+    model: str, *, models: Optional[object] = None
+) -> Optional[dict]:
     """Return the ``/ai/models`` capability entry for ``model``, or ``None``.
 
     The entry includes flags such as ``webSearch`` and ``temperature``. Pass an existing
@@ -547,7 +568,9 @@ def model_capabilities(model: str, *, models: Optional[object] = None) -> Option
     return None
 
 
-def supports_websearch(model: str, *, models: Optional[object] = None) -> Optional[bool]:
+def supports_websearch(
+    model: str, *, models: Optional[object] = None
+) -> Optional[bool]:
     """Return whether ``model`` advertises web-search support per ``/ai/models``.
 
     Returns ``True``/``False`` from the live ``webSearch`` capability flag, or ``None``
@@ -560,7 +583,6 @@ def supports_websearch(model: str, *, models: Optional[object] = None) -> Option
     return bool(entry["webSearch"])
 
 
-
 def supports_web_search_for(model: str) -> bool:
     """Backend-aware, offline web-search capability check.
 
@@ -569,6 +591,20 @@ def supports_web_search_for(model: str) -> bool:
     ``False``; Playground: Claude/Gemini families only.
     """
     return backends.supports_web_search(model)
+
+
+def supports_streaming_for(model: str) -> bool:
+    """Backend-aware token-streaming capability check.
+
+    Token-level streaming uses the OpenAI-format SSE path (:func:`stream_chat`),
+    which is only wired for the Playground backend and OpenAI-format families
+    (Databricks returns full JSON; Anthropic uses a different shape). Callers
+    that get ``False`` should fall back to the blocking :func:`chat`. Family
+    logic stays here in ``llm/`` so core never branches on the provider.
+    """
+    from .models import is_claude
+
+    return backends.current_backend() == backends.PLAYGROUND and not is_claude(model)
 
 
 def get_token_usage() -> dict:

@@ -10,6 +10,7 @@ Selection precedence: :func:`set_backend` runtime override → ``IFA_LLM_BACKEND
 :func:`supports_web_search` / :func:`supports_tools` and lets :func:`map_model`
 translate logical model names into backend-specific ones.
 """
+
 from __future__ import annotations
 
 import json
@@ -194,7 +195,9 @@ def _map_model_databricks(model: str, available: Optional[frozenset] = None) -> 
         _log.warning(
             "no Databricks endpoint %r for model %r — substituting %s "
             "(set IFA_DBX_MODEL_MAP / IFA_DBX_DEFAULT_MODEL to control this)",
-            candidate, model, fallback,
+            candidate,
+            model,
+            fallback,
         )
     return fallback
 

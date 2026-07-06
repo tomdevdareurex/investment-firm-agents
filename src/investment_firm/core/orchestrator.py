@@ -25,7 +25,13 @@ from typing import List, Optional, Tuple
 from .. import DISCLAIMER
 from ..llm import client, config
 from ..llm.costs import RunTracker
-from ..llm.utils import extract_text, extract_usage
+from ..llm.utils import (
+    extract_text,
+    extract_usage,
+    get_error_message,
+    is_completion_error,
+)
+from . import errors, events
 from .agent import Agent, _extract_json_block
 from .debate import run_debate
 from .memory import RunMemory
@@ -177,6 +183,10 @@ def _synthesize(
         f"{synth_spec.name} (synthesis)", synth_spec.model, inp, out, elapsed
     )
 
+    if is_completion_error(resp):
+        detail = get_error_message(resp) or "unknown error"
+        return "ERROR", errors.error_summary("synthesis", f"API error: {detail}")
+
     text = extract_text(resp, strict=False)
     block = _extract_json_block(text)
     if block is not None:
@@ -189,7 +199,10 @@ def _synthesize(
             return rec, summary or text.strip()[:600]
         except (ValueError, TypeError):
             pass
-    return "HOLD", text.strip()[:600] or "(no parseable synthesis)"
+    return "ERROR", (
+        errors.error_summary("synthesis", "no parseable JSON")
+        + f" Raw output (truncated): {text.strip()[:400]}"
+    )
 
 
 def run_committee(
@@ -198,6 +211,7 @@ def run_committee(
     profile: Optional[str] = None,
     simple: bool = False,
     tracker: Optional[RunTracker] = None,
+    on_event: Optional[events.EventSink] = None,
 ) -> Tuple[Memo, RunTracker]:
     """Run the committee and return ``(Memo, RunTracker)``.
 
@@ -218,12 +232,18 @@ def run_committee(
     sources: List[str] = []
     web_sources: List[Source] = []
 
+    events.safe_emit(
+        on_event, events.RUN_STARTED, detail=question, data={"profile": profile_name}
+    )
+
     if not simple:
+        events.safe_emit(on_event, events.BRIEFING_STARTED)
         briefing, sources, librarian_citations = _build_briefing(
             question, profile_name, tracker
         )
         web_sources.extend(librarian_citations)
         memory.set_briefing(briefing)
+        events.safe_emit(on_event, events.BRIEFING_DONE)
         _pace()
 
     # --- choose analysts -------------------------------------------------
@@ -238,6 +258,7 @@ def run_committee(
         _pace()
 
     specs = resolve_roles(chosen, profile=profile_name)
+    events.safe_emit(on_event, events.PLAN_DONE, data={"analysts": list(chosen)})
 
     # --- run analysts ----------------------------------------------------
     tools = (
@@ -261,7 +282,12 @@ def run_committee(
             web_search=enable_ws,
             web_search_max_uses=ws_max_uses,
         )
-        view = agent.run(question, context=memory.context_for(name), tracker=tracker)
+        view = agent.run(
+            question,
+            context=memory.context_for(name),
+            tracker=tracker,
+            on_event=on_event,
+        )
         views.append(view)
         web_sources.extend(view.citations)
         memory.record_finding(
@@ -273,10 +299,12 @@ def run_committee(
     synth_spec = _resolve(SYNTH_ROLE, profile_name)
     debate_turns = []
     debate_summary = ""
+    debate_ran = False
     max_debate_rounds = int(
         profile_setting("max_debate_rounds", 0, profile=profile_name) or 0
     )
     if not simple and max_debate_rounds > 0 and views:
+        debate_ran = True
         bull_spec = _resolve("bull_researcher", profile_name)
         bear_spec = _resolve("bear_researcher", profile_name)
         result = run_debate(
@@ -288,6 +316,7 @@ def run_committee(
             judge_spec=synth_spec,
             max_rounds=max_debate_rounds,
             tracker=tracker,
+            on_event=on_event,
         )
         debate_turns = result.transcript
         debate_summary = result.summary
@@ -296,8 +325,21 @@ def run_committee(
         _pace()
 
     # --- synthesize ------------------------------------------------------
+    events.safe_emit(
+        on_event,
+        events.SYNTHESIS_STARTED,
+        agent=synth_spec.name,
+        model=synth_spec.model,
+    )
     recommendation, summary = _synthesize(
         question, memory.briefing, views, synth_spec, tracker, debate_summary
+    )
+    events.safe_emit(
+        on_event,
+        events.SYNTHESIS_DONE,
+        agent=synth_spec.name,
+        model=synth_spec.model,
+        detail=recommendation,
     )
 
     memo = Memo(
@@ -309,8 +351,13 @@ def run_committee(
         briefing=memory.briefing,
         debate=debate_turns,
         debate_summary=debate_summary,
+        synth_role=synth_spec.name,
+        synth_model=synth_spec.model,
+        debate_judge_role=synth_spec.name if debate_ran else "",
+        debate_judge_model=synth_spec.model if debate_ran else "",
         sources=sources,
         web_sources=_dedup_sources(web_sources),
         disclaimer=DISCLAIMER,
     )
+    events.safe_emit(on_event, events.RUN_DONE, detail=recommendation)
     return memo, tracker

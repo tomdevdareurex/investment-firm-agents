@@ -1,12 +1,13 @@
 """Offline tests for LLM backend selection, mapping, capabilities, and the
 Databricks adapter (SDK fully mocked — no network, no tokens, no Databricks)."""
+
 from __future__ import annotations
 
 import sys
 
 import pytest
 
-from investment_firm.llm import backends, client, databricks_backend
+from investment_firm.llm import backends, client, databricks_backend, sanitize
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +90,9 @@ def test_client_capability_shim_is_backend_aware(monkeypatch):
 
 
 def test_map_model_playground_is_identity():
-    assert backends.map_model("claude-4.8-opus", backend="playground") == "claude-4.8-opus"
+    assert (
+        backends.map_model("claude-4.8-opus", backend="playground") == "claude-4.8-opus"
+    )
 
 
 def test_map_model_databricks_names_pass_through():
@@ -111,10 +114,11 @@ def test_map_model_claude_transform():
 
 
 def test_map_model_env_map_wins(monkeypatch):
-    monkeypatch.setenv(
-        "IFA_DBX_MODEL_MAP", '{"claude-4.6-opus": "my-custom-endpoint"}'
+    monkeypatch.setenv("IFA_DBX_MODEL_MAP", '{"claude-4.6-opus": "my-custom-endpoint"}')
+    assert (
+        backends.map_model("claude-4.6-opus", backend="databricks")
+        == "my-custom-endpoint"
     )
-    assert backends.map_model("claude-4.6-opus", backend="databricks") == "my-custom-endpoint"
 
 
 def test_map_model_invalid_env_map_is_ignored(monkeypatch):
@@ -219,7 +223,9 @@ class _FakeOpenAIClient:
 def test_databricks_chat_returns_openai_shaped_dict(monkeypatch):
     fake = _FakeOpenAIClient()
     monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
-    resp = databricks_backend.chat("claude-4.5-haiku", [{"role": "user", "content": "hi"}])
+    resp = databricks_backend.chat(
+        "claude-4.5-haiku", [{"role": "user", "content": "hi"}]
+    )
     from investment_firm.llm.utils import extract_text, extract_usage, is_error
 
     assert is_error(resp) is False
@@ -264,13 +270,147 @@ def test_databricks_chat_passes_openai_tools_through(monkeypatch):
 def test_databricks_chat_wraps_provider_failure_as_error_dict(monkeypatch):
     fake = _FakeOpenAIClient(error=RuntimeError("endpoint not found"))
     monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
-    resp = databricks_backend.chat("claude-4.5-haiku", [{"role": "user", "content": "hi"}])
+    resp = databricks_backend.chat(
+        "claude-4.5-haiku", [{"role": "user", "content": "hi"}]
+    )
     from investment_firm.llm.utils import get_error_message, is_error
 
     assert is_error(resp) is True
     msg = get_error_message(resp)
     assert "Databricks call failed" in msg
     assert "endpoint not found" in msg
+
+
+# --- message-history sanitizer (llm/sanitize.py) -----------------------------
+
+
+class TestSanitizeOpenAIMessages:
+    def _assistant_call(self, call_id, name="get_prices", content=""):
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+            ],
+        }
+
+    def test_balanced_history_unchanged_with_tools(self):
+        msgs = [
+            {"role": "user", "content": "q"},
+            self._assistant_call("c1"),
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": 1}'},
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
+        assert out == msgs
+
+    def test_dangling_tool_call_gets_synthesized_result(self):
+        msgs = [
+            {"role": "user", "content": "q"},
+            self._assistant_call("c1"),
+            {"role": "user", "content": "answer now"},
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
+        assert out[1]["tool_calls"]  # assistant turn preserved, never dropped
+        stub = out[2]
+        assert stub["role"] == "tool"
+        assert stub["tool_call_id"] == "c1"
+        assert "tool result unavailable" in stub["content"]
+        assert out[3] == {"role": "user", "content": "answer now"}
+
+    def test_orphan_tool_result_dropped(self):
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "tool", "tool_call_id": "ghost", "content": "{}"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
+        assert all(m.get("role") != "tool" for m in out)
+        assert len(out) == 2
+
+    def test_flatten_without_tools(self):
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "q"},
+            self._assistant_call("c1", name="get_prices", content="thinking"),
+            {"role": "tool", "tool_call_id": "c1", "content": '{"price": 10}'},
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=False)
+        assert all("tool_calls" not in m for m in out)
+        assert all(m["role"] != "tool" for m in out)
+        flat_assistant = out[2]
+        assert flat_assistant["role"] == "assistant"
+        assert "thinking" in flat_assistant["content"]
+        assert "[called tools: get_prices]" in flat_assistant["content"]
+        flat_result = out[3]
+        assert flat_result["role"] == "user"
+        assert flat_result["content"] == 'Tool result (c1): {"price": 10}'
+
+    def test_flatten_also_repairs_dangling_ids(self):
+        msgs = [
+            {"role": "user", "content": "q"},
+            self._assistant_call("c1"),
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=False)
+        assert all(m["role"] != "tool" for m in out)
+        assert any(
+            m["role"] == "user" and "tool result unavailable" in m["content"]
+            for m in out
+        )
+
+
+def test_databricks_chat_sanitizes_unbalanced_history(monkeypatch):
+    """Dangling tool_calls in a tools-present request get stub results."""
+    fake = _FakeOpenAIClient()
+    monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
+    tools = [{"type": "function", "function": {"name": "dummy", "parameters": {}}}]
+    msgs = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "dummy", "arguments": "{}"},
+                }
+            ],
+        },
+    ]
+    databricks_backend.chat("claude-4.5-haiku", msgs, tools=tools)
+    sent = fake.calls[0]["messages"]
+    assert sent[-1]["role"] == "tool"
+    assert sent[-1]["tool_call_id"] == "c1"
+
+
+def test_databricks_chat_flattens_tool_history_when_tools_absent(monkeypatch):
+    """Retry-without-tools resends a tool exchange with no tools kwarg — must flatten."""
+    fake = _FakeOpenAIClient()
+    monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
+    msgs = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "get_prices", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": '{"price": 10}'},
+    ]
+    databricks_backend.chat("claude-4.5-haiku", msgs)
+    sent = fake.calls[0]["messages"]
+    assert all("tool_calls" not in m for m in sent)
+    assert all(m["role"] != "tool" for m in sent)
+    assert any("Tool result (c1)" in m.get("content", "") for m in sent)
 
 
 def test_missing_sdk_gives_install_and_auth_hint(monkeypatch):

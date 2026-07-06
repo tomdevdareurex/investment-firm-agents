@@ -4,6 +4,7 @@ Values are read lazily (via functions) so tests can monkeypatch the environment 
 the process can be reconfigured without re-importing. A ``.env`` file at the repository
 root is loaded once at import time if present.
 """
+
 from __future__ import annotations
 
 import os

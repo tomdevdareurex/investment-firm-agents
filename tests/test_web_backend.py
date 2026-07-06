@@ -1,4 +1,5 @@
 """Offline tests for the /api/backend endpoints and the UI backend switch."""
+
 from __future__ import annotations
 
 import pytest

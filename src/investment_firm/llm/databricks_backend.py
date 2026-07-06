@@ -15,6 +15,7 @@ existing parsers in :mod:`investment_firm.llm.utils` work unchanged. Provider
 call failures are returned as error-shaped dicts (``{"error": {...}}``) so the
 agent resilience ladder handles them (e.g. retry without tools).
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +23,7 @@ from functools import lru_cache
 from typing import Any, Optional, Sequence
 
 from . import backends
+from .sanitize import sanitize_openai_messages
 
 _log = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ def _import_workspace_client():
     """Lazily import the Databricks SDK; raise a clear install hint if absent."""
     try:
         from databricks.sdk import WorkspaceClient  # noqa: PLC0415 - lazy on purpose
+
         return WorkspaceClient
     except ImportError as exc:
         raise DatabricksBackendError(
@@ -112,7 +115,10 @@ def chat(
     endpoint = backends.map_model(
         model, backend=backends.DATABRICKS, available=_available_endpoints()
     )
-    kwargs: dict[str, Any] = {"model": endpoint, "messages": list(messages)}
+    kwargs: dict[str, Any] = {
+        "model": endpoint,
+        "messages": sanitize_openai_messages(messages, tools_present=bool(tools)),
+    }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if temperature is not None:

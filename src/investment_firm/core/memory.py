@@ -11,6 +11,7 @@ Two scopes:
 Embeddings-based long-term recall across runs stays in M3; this is deliberately simple
 and in-process.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

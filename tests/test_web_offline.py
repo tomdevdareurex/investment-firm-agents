@@ -3,11 +3,14 @@
 Uses fastapi.testclient.TestClient (httpx transport, no real server).
 Skipped automatically if fastapi is not installed (.[api] extra not present).
 """
+
 from __future__ import annotations
 
 import pytest
 
-fastapi = pytest.importorskip("fastapi", reason="fastapi not installed (run: pip install -e '.[api]')")
+fastapi = pytest.importorskip(
+    "fastapi", reason="fastapi not installed (run: pip install -e '.[api]')"
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 from investment_firm.interfaces.web.app import app  # noqa: E402
@@ -23,6 +26,7 @@ def client():
 # ---------------------------------------------------------------------------
 # GET /api/health
 # ---------------------------------------------------------------------------
+
 
 class TestHealth:
     def test_returns_200(self, client):
@@ -42,6 +46,7 @@ class TestHealth:
 # ---------------------------------------------------------------------------
 # GET /api/profiles
 # ---------------------------------------------------------------------------
+
 
 class TestProfiles:
     def test_returns_200(self, client):
@@ -66,6 +71,7 @@ class TestProfiles:
 # ---------------------------------------------------------------------------
 # GET /api/preview
 # ---------------------------------------------------------------------------
+
 
 class TestPreview:
     def test_happy_path_returns_roles(self, client):
@@ -126,6 +132,7 @@ class TestPreview:
 # ---------------------------------------------------------------------------
 # GET / (HTML index)
 # ---------------------------------------------------------------------------
+
 
 class TestIndex:
     def test_returns_html(self, client):

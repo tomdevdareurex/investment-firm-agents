@@ -437,6 +437,13 @@ footer {
   letter-spacing: 0.06em;
 }
 
+.memo-attribution {
+  margin: 0 0 var(--space-lg);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
 .badge--rec {
   font-size: 1rem;
   padding: 4px 14px;
@@ -447,6 +454,19 @@ footer {
 .badge--sell  { background: #7f1d1d; color: #fca5a5; }
 .badge--hold  { background: #1e3a5f; color: #90c7f8; }
 .badge--avoid { background: #431407; color: #fdba74; }
+.badge--error { background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
+
+.error-box {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #ef4444;
+  border-radius: var(--radius-md);
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .section-title {
   font-size: 0.8rem;
@@ -516,6 +536,70 @@ footer {
 
 .debate-turn--bear .debate-speaker {
   color: #ef5350;
+}
+
+.live-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+}
+
+.live-feed-item {
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.consultant-controls {
+  margin-bottom: var(--space-md);
+}
+
+.consultant-model,
+.consultant-input {
+  width: 100%;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.consultant-log {
+  max-height: 420px;
+  overflow-y: auto;
+  margin-bottom: var(--space-md);
+}
+
+.consultant-bubble {
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.consultant-bubble--user {
+  background: var(--color-surface-2);
+}
+
+.consultant-role {
+  display: inline-block;
+  font-weight: 600;
+  margin-bottom: var(--space-xs);
+  color: var(--color-text-muted);
+}
+
+.consultant-form {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.consultant-form .consultant-input {
+  flex: 1;
 }
 
 .debate-verdict {

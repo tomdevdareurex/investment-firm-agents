@@ -1,4 +1,5 @@
 """Offline unit tests — no network, no tokens. These are the default suite."""
+
 from __future__ import annotations
 
 import httpx
@@ -15,7 +16,6 @@ from investment_firm.llm.utils import (
     get_error_message,
 )
 
-
 # --- response parsing -----------------------------------------------------
 
 
@@ -25,7 +25,9 @@ def test_extract_text_openai_shape():
 
 
 def test_extract_text_anthropic_shape():
-    resp = {"content": [{"type": "text", "text": "hi "}, {"type": "text", "text": "there"}]}
+    resp = {
+        "content": [{"type": "text", "text": "hi "}, {"type": "text", "text": "there"}]
+    }
     assert extract_text(resp) == "hi there"
 
 
@@ -35,7 +37,9 @@ def test_extract_text_error_nonstrict():
 
 
 def test_extract_usage_openai_and_anthropic():
-    openai = {"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+    openai = {
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    }
     anthropic = {"usage": {"input_tokens": 7, "output_tokens": 3}}
     assert extract_usage(openai) == (10, 5, 15)
     assert extract_usage(anthropic) == (7, 3, 10)
@@ -80,6 +84,7 @@ def test_extract_text_string_nonstrict():
 
 def test_extract_text_list_strict_raises():
     from investment_firm.llm.utils import PlaygroundError
+
     with pytest.raises(PlaygroundError):
         extract_text([], strict=True)
 
@@ -367,7 +372,9 @@ _MODELS_PAYLOAD = [
 
 def test_supports_websearch_reads_capability_flag():
     assert client.supports_websearch("gemini-2.5-flash", models=_MODELS_PAYLOAD) is True
-    assert client.supports_websearch("claude-4.6-sonnet", models=_MODELS_PAYLOAD) is True
+    assert (
+        client.supports_websearch("claude-4.6-sonnet", models=_MODELS_PAYLOAD) is True
+    )
     assert client.supports_websearch("gpt-5.5", models=_MODELS_PAYLOAD) is False
     assert client.supports_websearch("o4-mini", models=_MODELS_PAYLOAD) is False
 
@@ -385,4 +392,3 @@ def test_model_capabilities_returns_full_entry():
     entry = client.model_capabilities("gpt-5.5", models=_MODELS_PAYLOAD)
     assert entry is not None and entry["model"] == "gpt-5.5"
     assert client.model_capabilities("nope", models=_MODELS_PAYLOAD) is None
-

@@ -6,6 +6,7 @@ Investment Committee run (``investment-firm "<question>"``): a briefing built wi
 tools, a planner that picks analysts, tool-using analyst agents, and a synthesized memo.
 Use ``--simple`` for a cheaper fixed run. The full parallel committee with voting is M2.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,9 @@ from ..llm.models import DEFAULT_CHAT_MODEL
 from ..llm.utils import PlaygroundError, extract_text, extract_usage
 
 _SMOKE_MODEL = DEFAULT_CHAT_MODEL  # cheap
-_PROBE_PROMPT = "What was the most recent ECB monetary policy decision, and on what date?"
+_PROBE_PROMPT = (
+    "What was the most recent ECB monetary policy decision, and on what date?"
+)
 
 
 def _print_disclaimer() -> None:
@@ -119,7 +122,9 @@ def cmd_probe_websearch(model: str) -> int:
             "/ai/models (model not listed) — probing anyway.\n"
         )
 
-    print(f"Probing web search on {model!r} (mode=generic, flag={config.websearch_flag()!r}) ...\n")
+    print(
+        f"Probing web search on {model!r} (mode=generic, flag={config.websearch_flag()!r}) ...\n"
+    )
 
     try:
         resp = client.chat(
@@ -149,14 +154,52 @@ def cmd_probe_websearch(model: str) -> int:
     return 0
 
 
-def cmd_run(question: str, profile: Optional[str] = None, simple: bool = False) -> int:
+def _stream_printer():
+    """Return an ``on_event`` callback that prints coarse step events to stdout."""
+    from ..core import events
+
+    def _print(event) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        who = event.agent or ""
+        model = f" ({event.model})" if event.model else ""
+        detail = f" — {event.detail}" if event.detail else ""
+        # Keep debate/tool details on one tidy line.
+        line = f"[{stamp}] {event.kind} {who}{model}{detail}".rstrip()
+        print(line[:200], file=sys.stderr)
+
+    return _print
+
+
+def cmd_run(
+    question: str,
+    profile: Optional[str] = None,
+    simple: bool = False,
+    stream: Optional[bool] = None,
+    chat: bool = False,
+) -> int:
     """Run the Investment Committee for a question and print the memo.
 
     Default is the full agentic flow (briefing → plan → tool-using analysts →
     synthesis). ``simple`` runs the cheaper M1-style fixed sequence with no tools/planner.
+    When ``stream`` is enabled (default: interactive TTY), coarse step events are
+    printed to stderr as the run progresses. When ``chat`` is set, a read-only
+    consultant REPL opens over the completed run after the memo prints.
     """
     from ..core.orchestrator import run_committee
     from ..core.roster import RosterError
+
+    if stream is None:
+        stream = sys.stdout.isatty()
+
+    collected: list = []
+    printer = _stream_printer() if stream else None
+
+    def _on_event(event) -> None:
+        collected.append(event)
+        if printer is not None:
+            printer(event)
+
+    on_event = _on_event if (stream or chat) else None
 
     _print_disclaimer()
     if config.call_pause() == 0 and not simple:
@@ -165,14 +208,41 @@ def cmd_run(question: str, profile: Optional[str] = None, simple: bool = False) 
             "minute limit, set IFA_CALL_PAUSE=2 (seconds between calls) or use --simple.\n"
         )
     try:
-        memo, tracker = run_committee(question, profile=profile, simple=simple)
+        memo, tracker = run_committee(
+            question, profile=profile, simple=simple, on_event=on_event
+        )
     except RosterError as exc:
         print(f"[roster] {exc}", file=sys.stderr)
         return 2
     print(memo.render())
     print()
     print(tracker.render_summary())
+    if chat:
+        _consultant_repl(memo, collected)
     return 0
+
+
+def _consultant_repl(memo, collected) -> None:
+    """Interactive read-only consultant REPL scoped to the completed run."""
+    from ..core import events as _events
+    from ..core.consultant import Consultant, RunContext
+
+    context = RunContext(memo, [_events.to_dict(e) for e in collected])
+    consultant = Consultant(context)
+    print(
+        f"\n[consultant] Read-only quant consultant ({consultant.model}). "
+        "Ask about this run; blank line or 'quit' to exit."
+    )
+    while True:
+        try:
+            line = input("consultant> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line or line.lower() in {"quit", "exit"}:
+            break
+        answer = consultant.ask(line)
+        print(answer)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -194,10 +264,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="cheaper fixed 3-analyst run with no tools/planner (fewer calls)",
     )
+    parser.add_argument(
+        "--stream",
+        dest="stream",
+        action="store_true",
+        default=None,
+        help="stream coarse step events to stderr as the run progresses",
+    )
+    parser.add_argument(
+        "--no-stream",
+        dest="stream",
+        action="store_false",
+        help="disable live step-event streaming (default off when not a TTY)",
+    )
+    parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="after the memo, open a read-only consultant REPL scoped to the run",
+    )
     parser.add_argument("--version", action="store_true", help="print version and exit")
     parser.add_argument("--models", action="store_true", help="list models (no tokens)")
-    parser.add_argument("--tokens", action="store_true", help="show token usage (no tokens)")
-    parser.add_argument("--smoke", action="store_true", help="run the end-to-end smoke test")
+    parser.add_argument(
+        "--tokens", action="store_true", help="show token usage (no tokens)"
+    )
+    parser.add_argument(
+        "--smoke", action="store_true", help="run the end-to-end smoke test"
+    )
     parser.add_argument(
         "--probe-websearch",
         metavar="MODEL",
@@ -224,7 +316,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.probe_websearch:
             return cmd_probe_websearch(args.probe_websearch)
         if args.question:
-            return cmd_run(args.question, profile=args.profile, simple=args.simple)
+            return cmd_run(
+                args.question,
+                profile=args.profile,
+                simple=args.simple,
+                stream=args.stream,
+                chat=args.chat,
+            )
     except config.ConfigError as exc:
         print(f"[config] {exc}", file=sys.stderr)
         return 2

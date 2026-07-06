@@ -73,10 +73,18 @@ def _make_memo(question: str = "Test question", profile: str = "balanced") -> Me
             )
         ],
         debate=[
-            DebateTurn(speaker="Bull", text="Growth justifies the multiple."),
-            DebateTurn(speaker="Bear", text="Valuation leaves no margin."),
+            DebateTurn(
+                speaker="Senior Research Bull", text="Growth justifies the multiple."
+            ),
+            DebateTurn(
+                speaker="Senior Research Bear", text="Valuation leaves no margin."
+            ),
         ],
         debate_summary="BULLISH: the bull case is better supported on earnings.",
+        synth_role="cio",
+        synth_model="claude-4.8-opus",
+        debate_judge_role="cio",
+        debate_judge_model="claude-4.8-opus",
         disclaimer=investment_firm.DISCLAIMER,
     )
 
@@ -89,14 +97,30 @@ def _make_tracker() -> RunTracker:
 
 
 def _fake_run_committee(
-    question, *, profile=None, simple=False, tracker=None
+    question, *, profile=None, simple=False, tracker=None, on_event=None
 ) -> Tuple[Memo, RunTracker]:
+    from investment_firm.core import events
+
+    events.safe_emit(on_event, events.RUN_STARTED, detail=question)
+    events.safe_emit(
+        on_event, events.ANALYST_STARTED, agent="equity_analyst", model="gpt-4o-mini"
+    )
+    events.safe_emit(
+        on_event,
+        events.ANALYST_DONE,
+        agent="equity_analyst",
+        model="gpt-4o-mini",
+        data={"stance": "BULLISH", "conviction": 4, "grounded": True},
+    )
     memo = _make_memo(question=question, profile=profile or "balanced")
     t = _make_tracker()
+    events.safe_emit(on_event, events.RUN_DONE, detail=memo.recommendation)
     return memo, t
 
 
-def _fake_run_committee_error(question, *, profile=None, simple=False, tracker=None):
+def _fake_run_committee_error(
+    question, *, profile=None, simple=False, tracker=None, on_event=None
+):
     raise RuntimeError("Simulated orchestrator failure")
 
 
@@ -290,9 +314,22 @@ class TestGetRunById:
         run_id = post.json()["run_id"]
         data = _wait_for_done(client, run_id)
         result = data["result"]
-        assert [t["speaker"] for t in result["debate"]] == ["Bull", "Bear"]
+        assert [t["speaker"] for t in result["debate"]] == [
+            "Senior Research Bull",
+            "Senior Research Bear",
+        ]
         assert result["debate"][0]["text"] == "Growth justifies the multiple."
         assert result["debate_summary"].startswith("BULLISH")
+
+    def test_result_includes_cio_attribution(self, client):
+        post = client.post("/api/runs", json={"question": "Attribution?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        result = data["result"]
+        assert result["synth_role"] == "cio"
+        assert result["synth_model"] == "claude-4.8-opus"
+        assert result["debate_judge_role"] == "cio"
+        assert result["debate_judge_model"] == "claude-4.8-opus"
 
     def test_ungrounded_view_produces_warning(self, client):
         post = client.post("/api/runs", json={"question": "Grounding?"})
@@ -301,6 +338,45 @@ class TestGetRunById:
         # credit_analyst view in the fake memo has grounded=False (default)
         warnings = data["result"]["warnings"]
         assert any("credit_analyst" in w and "ungrounded" in w for w in warnings)
+
+    def test_error_view_produces_error_warning_and_field(self, monkeypatch):
+        """An ERROR-stance view yields a '<role>: ERROR — ...' warning + error key."""
+        from investment_firm.core import errors as core_errors
+
+        def _fake_error_run(
+            question, *, profile=None, simple=False, tracker=None, on_event=None
+        ):
+            memo = _make_memo(question=question, profile=profile or "balanced")
+            memo.views.append(
+                core_errors.api_error_view("news_analyst", "gpt-4o-mini", "HTTP 500")
+            )
+            return memo, _make_tracker()
+
+        monkeypatch.setattr(
+            "investment_firm.interfaces.web.runs.run_committee", _fake_error_run
+        )
+        import investment_firm.interfaces.web.runs as runs_mod
+
+        runs_mod._registry.clear()
+        from investment_firm.interfaces.web.app import app
+
+        with TestClient(app, raise_server_exceptions=True) as c:
+            post = c.post("/api/runs", json={"question": "Error path?"})
+            run_id = post.json()["run_id"]
+            data = _wait_for_done(c, run_id)
+        result = data["result"]
+        warnings = result["warnings"]
+        assert any(w.startswith("news_analyst: ERROR — ") for w in warnings)
+        error_view = next(v for v in result["views"] if v["role"] == "news_analyst")
+        assert error_view["stance"] == "ERROR"
+        assert error_view["error"].startswith("API/completion failure")
+
+    def test_view_payload_includes_error_field(self, client):
+        post = client.post("/api/runs", json={"question": "Fields?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        for view in data["result"]["views"]:
+            assert "error" in view
 
     def test_done_result_has_cost_summary(self, client):
         post = client.post("/api/runs", json={"question": "Rates view?"})
@@ -382,3 +458,104 @@ class TestListRuns:
         data = client.get("/api/runs").json()
         assert "disclaimer" in data
         assert data["disclaimer"]
+
+
+def _parse_sse(body: str) -> list:
+    """Extract JSON payloads from step-event ``data:`` frames in an SSE body.
+
+    Frames carrying an ``event:`` line (the terminal ``end`` frame, keep-alives)
+    are skipped so only ordered step events are returned.
+    """
+    import json as _json
+
+    out = []
+    for frame in body.split("\n\n"):
+        lines = frame.splitlines()
+        if any(line.startswith("event:") for line in lines):
+            continue
+        for line in lines:
+            if line.startswith("data: "):
+                try:
+                    out.append(_json.loads(line[len("data: ") :]))
+                except ValueError:
+                    pass
+    return out
+
+
+class TestRunEvents:
+    def test_events_stream_yields_ordered_events(self, client):
+        run_id = client.post("/api/runs", json={"question": "Stream?"}).json()["run_id"]
+        _wait_for_done(client, run_id)
+        resp = client.get(f"/api/runs/{run_id}/events")
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        payloads = _parse_sse(resp.text)
+        kinds = [p["kind"] for p in payloads]
+        assert kinds[0] == "run_started"
+        assert kinds[-1] == "run_done"
+        assert "analyst_started" in kinds
+        # seq is strictly increasing.
+        seqs = [p["seq"] for p in payloads]
+        assert seqs == sorted(seqs)
+        assert "event: end" in resp.text
+
+    def test_events_after_cursor_skips_earlier(self, client):
+        run_id = client.post("/api/runs", json={"question": "Cursor?"}).json()["run_id"]
+        _wait_for_done(client, run_id)
+        full = _parse_sse(client.get(f"/api/runs/{run_id}/events").text)
+        assert len(full) >= 2
+        first_seq = full[0]["seq"]
+        resp = client.get(f"/api/runs/{run_id}/events?after={first_seq}")
+        payloads = _parse_sse(resp.text)
+        assert all(p["seq"] > first_seq for p in payloads)
+        assert len(payloads) == len(full) - 1
+
+    def test_events_unknown_run_404(self, client):
+        resp = client.get("/api/runs/deadbeef/events")
+        assert resp.status_code == 404
+
+    def test_poll_reports_event_count(self, client):
+        run_id = client.post("/api/runs", json={"question": "Count?"}).json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        assert data["event_count"] >= 1
+
+
+class TestRunChat:
+    def test_chat_on_done_run_returns_answer(self, client, monkeypatch):
+        from conftest import FakeLLM, openai_text
+
+        run_id = client.post("/api/runs", json={"question": "Chat?"}).json()["run_id"]
+        _wait_for_done(client, run_id)
+
+        fake = FakeLLM([openai_text("The recommendation was BUY because of X.")])
+        monkeypatch.setattr("investment_firm.llm.client.chat", fake)
+
+        resp = client.post(
+            f"/api/runs/{run_id}/chat",
+            json={"message": "Explain the call", "model": "gpt-4.1"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "BUY" in data["answer"]
+        assert data["message_id"] == 1
+        # The consultant's system prompt saw the run's memo recommendation.
+        system_msg = fake.calls[0][1][0]["content"]
+        assert "RECOMMENDATION" in system_msg.upper()
+
+    def test_chat_empty_message_400(self, client):
+        run_id = client.post("/api/runs", json={"question": "Chat?"}).json()["run_id"]
+        _wait_for_done(client, run_id)
+        resp = client.post(f"/api/runs/{run_id}/chat", json={"message": "  "})
+        assert resp.status_code == 400
+
+    def test_chat_unknown_run_404(self, client):
+        resp = client.post("/api/runs/deadbeef/chat", json={"message": "hi"})
+        assert resp.status_code == 404
+
+    def test_chat_on_unfinished_run_409(self, error_client):
+        run_id = error_client.post("/api/runs", json={"question": "boom"}).json()[
+            "run_id"
+        ]
+        _wait_for_done(error_client, run_id)  # ends in error → not done
+        resp = error_client.post(f"/api/runs/{run_id}/chat", json={"message": "hi"})
+        assert resp.status_code == 409

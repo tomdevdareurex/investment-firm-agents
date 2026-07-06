@@ -3,6 +3,7 @@
 These lists mirror the documentation; the live source of truth is the ``/ai/models``
 endpoint (see :func:`investment_firm.llm.client.list_models`).
 """
+
 from __future__ import annotations
 
 CLAUDE_MODELS = [

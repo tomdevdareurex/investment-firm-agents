@@ -5,6 +5,7 @@ an ordered subset of roles to run. This gives the run *dynamic control flow* (pl
 rather than the fixed M1 sequence. If the model's plan can't be parsed, we fall back to
 all candidate roles so a run never stalls.
 """
+
 from __future__ import annotations
 
 import json
@@ -46,7 +47,9 @@ def plan_roles(
     elapsed = time.perf_counter() - start
     if tracker is not None:
         inp, out, _ = extract_usage(resp)
-        tracker.record(f"{planner_spec.name} (planner)", planner_spec.model, inp, out, elapsed)
+        tracker.record(
+            f"{planner_spec.name} (planner)", planner_spec.model, inp, out, elapsed
+        )
 
     text = extract_text(resp, strict=False)
     block = _extract_json_block(text)

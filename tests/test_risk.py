@@ -3,6 +3,7 @@
 All tests are pure Python — no network, no yfinance calls (yfinance is
 monkeypatched where the tool is tested).
 """
+
 from __future__ import annotations
 
 import math
@@ -25,7 +26,6 @@ from investment_firm.core.tools.datasources import (
     compute_risk_metrics,
     default_data_tools,
 )
-
 
 # ---------------------------------------------------------------------------
 # returns_from_prices
@@ -205,8 +205,13 @@ class TestRiskSummary:
     def test_keys(self):
         result = risk_summary(self._PRICES)
         expected_keys = {
-            "n_obs", "ann_vol", "hist_var_1d", "param_var_1d",
-            "es_1d", "max_drawdown", "var_level",
+            "n_obs",
+            "ann_vol",
+            "hist_var_1d",
+            "param_var_1d",
+            "es_1d",
+            "max_drawdown",
+            "var_level",
         }
         assert expected_keys == set(result.keys())
 
@@ -273,9 +278,17 @@ class TestComputeRiskMetrics:
         self._patch(monkeypatch)
         result = compute_risk_metrics("AAPL", period="1y")
         expected_keys = {
-            "ticker", "period", "as_of", "n_obs",
-            "ann_vol_pct", "hist_var_1d_pct", "param_var_1d_pct",
-            "es_1d_pct", "max_drawdown_pct", "var_level", "source",
+            "ticker",
+            "period",
+            "as_of",
+            "n_obs",
+            "ann_vol_pct",
+            "hist_var_1d_pct",
+            "param_var_1d_pct",
+            "es_1d_pct",
+            "max_drawdown_pct",
+            "var_level",
+            "source",
         }
         assert expected_keys == set(result.keys())
 
@@ -308,7 +321,9 @@ class TestComputeRiskMetrics:
         tools = default_data_tools()
         registry = ToolRegistry(tools)
         schemas = registry.schemas()
-        schema_names = [s["function"]["name"] for s in schemas if s.get("type") == "function"]
+        schema_names = [
+            s["function"]["name"] for s in schemas if s.get("type") == "function"
+        ]
         assert "compute_risk_metrics" in schema_names
 
     def test_no_price_data_raises_tool_error(self, monkeypatch):

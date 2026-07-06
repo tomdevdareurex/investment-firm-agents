@@ -1,12 +1,61 @@
 # Handover — investment-firm-agents
 
-_Last updated: 2026-07-06 (latest: TradingAgents data-tool integration + Alpha Vantage live + Zscaler requests-CA fix). Branch: `main` (all work uncommitted on top of `b1f5766 wip`)._
+_Last updated: 2026-07-06 (latest: fable-5 — named Bull/Bear debate, live step-event streaming, CIO attribution, real error handling, read-only quant consultant). Branch: `fable-5-debate-streaming-attribution` (uncommitted on top of the pre-fable-5 checkpoint)._
 
 ## What this repo is
 
 Buy-side investment firm simulated as orchestrated LLM agents on the Deutsche
 Börse AI Playground gateway → structured Investment Committee memo.
 **Decision-support only — never executes trades.**
+
+---
+
+## Session 2026-07-06: fable-5 (debate naming, streaming, attribution, errors, consultant) — DONE (uncommitted)
+
+**Goal:** harden trust + visibility of a run. All offline-tested (408 passed, black-clean).
+Continued a Claude Code session that ran out of tokens mid-Slice-2.
+
+### What was built
+
+1. **Real error handling** — `core/errors.py` (NEW): `error_summary`, `api_error_view`,
+   `parse_error_view`. `Stance`/`Recommendation` gained `"ERROR"`; `AnalystView.error`
+   field; `conviction ge=0`. Any failed analyst/debate/synthesis step now yields an
+   explicit labelled ERROR outcome (never a bland NEUTRAL). API errors stay in
+   `key_risks` as `"API error: <msg>"`, never in rationale. 4a: `llm/sanitize.py` (NEW)
+   balances Databricks `tool_use`/`tool_result` histories (wired in `databricks_backend`).
+   4b: `get_stocktwits_sentiment` retries crypto with a `.X` suffix, else structured
+   ToolError → DATA GAP. 4c: news_analyst parse failures yield an explicit ERROR view.
+2. **Named Bull/Bear debate** — `core/debate.py`: `BULL_LABEL`/`BEAR_LABEL` =
+   "Senior Research Bull/Bear"; prompts tell debaters to cite colleagues by role.
+   Debaters consume each analyst's full `AnalystView.render()` (rationale + key_risks).
+3. **CIO attribution** — `Memo` gained `synth_role`/`synth_model`/`debate_judge_role`/
+   `debate_judge_model`; `Memo.render()` + web memo tab + debate verdict heading show
+   "issued by CIO (model)". Populated in `orchestrator.run_committee`.
+4. **Live step-event bus** — `core/events.py` (NEW): `StepEvent`, `safe_emit` (swallows
+   consumer errors), `to_dict`. Opt-in `on_event=None` threaded through `Agent`,
+   `run_debate`, `run_committee` (zero LLM cost — pure emits). CLI `--stream/--no-stream`
+   prints coarse events to stderr. Web: run registry buffers events; `GET /api/runs/{id}/events`
+   is an SSE stream (sync generator); `app.js` opens an `EventSource` live feed (Reasoning +
+   Debate tabs) and falls back to the 3s poll on error.
+5. **Read-only quant consultant** — `core/consultant.py` (NEW): `Consultant.ask()` over a
+   `RunContext` (memo + step events), default model `claude-4.8-opus` (env
+   `IFA_CONSULTANT_MODEL`). Hard read-only: tool subset `CONSULTANT_TOOL_NAMES`
+   (get_prices/get_indicators/compute_risk_metrics/run_backtest) — no write/order tools
+   exist in its registry; prompt refuses trades/writes. `run_backtest` (NEW tool in
+   `datasources.py`) = read-only buy-and-hold historical compute on `risk.py`. Web:
+   `POST /api/runs/{id}/chat` (409 if run not done); CLI `--chat` REPL; GUI "Consultant" tab.
+   `client.supports_streaming_for` shim gates token streaming (llm/ only). Fix applied:
+   `_finalize` never re-generates an already-billed answer (chunks it locally when streaming).
+
+### Audits (this session)
+- **scope-compliance-guard: PASS** — consultant + run_backtest are strictly read-only,
+  no execution/broker/wallet, no new outbound connections.
+- **llm-cost-auditor: PASS** — committee path spends the same call count (events add zero);
+  consultant bounded + budget-guarded. Fixed one MEDIUM latent double-generation in streaming.
+
+### New tests (all offline)
+`test_errors.py`, `test_events.py`, `test_consultant.py`, new SSE + chat + attribution +
+label cases in `test_web_runs.py`, error/label updates in `test_debate.py`. **408 passed.**
 
 ---
 

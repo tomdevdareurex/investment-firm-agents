@@ -15,12 +15,12 @@ positive drift the result can be negative, which means at that confidence level 
 distribution predicts a gain, not a loss.  We do **not** clamp to zero — the sign
 carries information.
 """
+
 from __future__ import annotations
 
 import math
 import statistics
 from typing import Dict, Sequence
-
 
 # ---------------------------------------------------------------------------
 # Core building blocks
@@ -41,7 +41,9 @@ def returns_from_prices(prices: Sequence[float]) -> list[float]:
     """
     prices = list(prices)
     if len(prices) < 2:
-        raise ValueError(f"Need at least 2 prices to compute returns; got {len(prices)}")
+        raise ValueError(
+            f"Need at least 2 prices to compute returns; got {len(prices)}"
+        )
     for i, p in enumerate(prices):
         if p <= 0:
             raise ValueError(f"Price at index {i} is non-positive: {p}")
@@ -118,7 +120,9 @@ def parametric_var(returns: Sequence[float], level: float = 0.99) -> float:
     """
     returns = list(returns)
     if len(returns) < 2:
-        raise ValueError(f"Need at least 2 returns for parametric VaR; got {len(returns)}")
+        raise ValueError(
+            f"Need at least 2 returns for parametric VaR; got {len(returns)}"
+        )
     if not (0 < level < 1):
         raise ValueError(f"level must be in (0, 1); got {level}")
     mu = statistics.mean(returns)

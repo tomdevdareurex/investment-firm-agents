@@ -12,6 +12,7 @@ Covers:
 - Orchestrator web-search enablement per model family and profile setting
 - runs.py API-error warning generation
 """
+
 from __future__ import annotations
 
 import datetime
@@ -21,7 +22,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from investment_firm.core.agent import Agent, _extract_json_block, _salvage_fields, _strip_fences
+from investment_firm.core.agent import (
+    Agent,
+    _extract_json_block,
+    _salvage_fields,
+    _strip_fences,
+)
 from investment_firm.core.memory import RunMemory, ScratchMemory
 from investment_firm.core.orchestrator import run_committee
 from investment_firm.core.planner import plan_roles
@@ -31,7 +37,6 @@ from investment_firm.core.tools.base import Tool, ToolError, ToolRegistry
 from investment_firm.llm.costs import RunTracker
 
 from conftest import anthropic_text, openai_text, openai_tool_call
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,18 +57,21 @@ def _spec(name: str = "equity_analyst", model: str = "gpt-4o-mini") -> RoleSpec:
 
 
 def _clean_json() -> str:
-    return json.dumps({
-        "stance": "BULLISH",
-        "conviction": 4,
-        "rationale": "Strong earnings.",
-        "key_risks": ["recession"],
-        "evidence": ["Bloomberg: +5%"],
-    })
+    return json.dumps(
+        {
+            "stance": "BULLISH",
+            "conviction": 4,
+            "rationale": "Strong earnings.",
+            "key_risks": ["recession"],
+            "evidence": ["Bloomberg: +5%"],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Agent JSON parsing
 # ---------------------------------------------------------------------------
+
 
 class TestAgentParsing:
     def _agent(self) -> Agent:
@@ -91,11 +99,15 @@ class TestAgentParsing:
         assert "Too much debt" in view.rationale
 
     def test_plain_text_fallback(self):
-        # Total garbage — falls through to the plain-text fallback.
+        # Total garbage — now an explicit ERROR view, never fake analysis.
         view = self._agent()._parse("I think it is bullish overall.")
-        assert view.stance == "NEUTRAL"
-        assert view.conviction == 2
-        assert "bullish overall" in view.rationale
+        assert view.stance == "ERROR"
+        assert view.conviction == 0
+        assert view.grounded is False
+        assert view.error
+        assert view.rationale.startswith("ERROR:")
+        assert "bullish overall" in view.rationale  # raw text carried, labelled
+        assert "model did not return structured JSON" in view.key_risks
 
     def test_plain_text_fallback_leaves_memory_breadcrumb(self):
         agent = self._agent()
@@ -116,6 +128,7 @@ class TestAgentParsing:
 # ---------------------------------------------------------------------------
 # _strip_fences / _extract_json_block / _salvage_fields helpers
 # ---------------------------------------------------------------------------
+
 
 def test_strip_fences_removes_markers():
     assert _strip_fences("```json\n{}\n```") == "{}"
@@ -146,6 +159,7 @@ def test_salvage_fields_returns_none_on_no_signal():
 # Agent.run with one tool-call round
 # ---------------------------------------------------------------------------
 
+
 class TestAgentRun:
     def _make_tool(self, result: str = "42") -> Tool:
         return Tool(
@@ -158,10 +172,12 @@ class TestAgentRun:
     def test_agent_run_with_tool_call(self, fake_llm):
         """Agent does one tool-call round then emits a final JSON view."""
         final = _clean_json()
-        llm = fake_llm([
-            openai_tool_call("get_data", {}),          # first call → tool call
-            openai_text(final),                         # second call → final view
-        ])
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),  # first call → tool call
+                openai_text(final),  # second call → final view
+            ]
+        )
 
         registry = ToolRegistry([self._make_tool("market data")])
         agent = Agent(_spec(), tools=registry, max_steps=4)
@@ -188,8 +204,9 @@ class TestAgentRun:
         tracker.record("x", "m", 1, 0)  # consume 1 token → budget full
         agent = Agent(_spec(), tools=None, max_steps=3, max_tokens=10)
         view = agent.run("question", tracker=tracker)
-        # Falls back gracefully
-        assert view.stance == "NEUTRAL"
+        # Explicit ERROR outcome — no analysis was produced, so never NEUTRAL
+        assert view.stance == "ERROR"
+        assert view.conviction == 0
         llm.assert_call_count(0)
 
     def test_agent_run_anthropic_response(self, fake_llm):
@@ -204,6 +221,7 @@ class TestAgentRun:
 # ToolRegistry.dispatch
 # ---------------------------------------------------------------------------
 
+
 class TestToolRegistry:
     def _registry(self) -> ToolRegistry:
         def _good(**kwargs):
@@ -212,10 +230,17 @@ class TestToolRegistry:
         def _bad(**kwargs):
             raise ToolError("simulated failure")
 
-        return ToolRegistry([
-            Tool("good_tool", "desc", {"type": "object", "properties": {"x": {"type": "number"}}}, _good),
-            Tool("bad_tool", "desc", {"type": "object", "properties": {}}, _bad),
-        ])
+        return ToolRegistry(
+            [
+                Tool(
+                    "good_tool",
+                    "desc",
+                    {"type": "object", "properties": {"x": {"type": "number"}}},
+                    _good,
+                ),
+                Tool("bad_tool", "desc", {"type": "object", "properties": {}}, _bad),
+            ]
+        )
 
     def test_dispatch_success(self):
         r = self._registry()
@@ -255,6 +280,7 @@ class TestToolRegistry:
 # ScratchMemory
 # ---------------------------------------------------------------------------
 
+
 class TestScratchMemory:
     def test_remember_and_render(self):
         m = ScratchMemory()
@@ -276,6 +302,7 @@ class TestScratchMemory:
 # ---------------------------------------------------------------------------
 # RunMemory.context_for
 # ---------------------------------------------------------------------------
+
 
 class TestRunMemory:
     def test_context_includes_briefing(self):
@@ -312,8 +339,11 @@ class TestRunMemory:
 # AnalystView.render and Memo.render / all_sources
 # ---------------------------------------------------------------------------
 
+
 class TestSchemas:
-    def _view(self, role: str = "equity_analyst", stance: str = "BULLISH") -> AnalystView:
+    def _view(
+        self, role: str = "equity_analyst", stance: str = "BULLISH"
+    ) -> AnalystView:
         return AnalystView(
             role=role,
             model="gpt-4o-mini",
@@ -378,12 +408,14 @@ _SYNTH = '{"recommendation":"BUY","summary":"The committee recommends BUY."}'
 class TestRunCommitteeSimple:
     def test_returns_memo_with_views(self, fake_llm, monkeypatch):
         # simple=True runs 3 fixed analysts + 1 synthesis = 4 calls.
-        llm = fake_llm([
-            openai_text(_VIEW),   # equity_analyst
-            openai_text(_VIEW),   # credit_analyst
-            openai_text(_VIEW),   # rates_analyst
-            openai_text(_SYNTH),  # cio synthesis
-        ])
+        llm = fake_llm(
+            [
+                openai_text(_VIEW),  # equity_analyst
+                openai_text(_VIEW),  # credit_analyst
+                openai_text(_VIEW),  # rates_analyst
+                openai_text(_SYNTH),  # cio synthesis
+            ]
+        )
         monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
 
         memo, tracker = run_committee(
@@ -400,12 +432,14 @@ class TestRunCommitteeSimple:
         llm.assert_call_count(4)
 
     def test_tracker_records_calls(self, fake_llm, monkeypatch):
-        llm = fake_llm([
-            openai_text(_VIEW),
-            openai_text(_VIEW),
-            openai_text(_VIEW),
-            openai_text(_SYNTH),
-        ])
+        llm = fake_llm(
+            [
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_SYNTH),
+            ]
+        )
         monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
 
         memo, tracker = run_committee("Q?", profile="budget", simple=True)
@@ -415,12 +449,14 @@ class TestRunCommitteeSimple:
 
     def test_memo_sources_dedup(self, fake_llm, monkeypatch):
         # All three views carry the same evidence; all_sources should dedup.
-        llm = fake_llm([
-            openai_text(_VIEW),
-            openai_text(_VIEW),
-            openai_text(_VIEW),
-            openai_text(_SYNTH),
-        ])
+        llm = fake_llm(
+            [
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_SYNTH),
+            ]
+        )
         monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
         memo, _ = run_committee("Q?", profile="budget", simple=True)
         sources = memo.all_sources()
@@ -430,6 +466,7 @@ class TestRunCommitteeSimple:
 # ---------------------------------------------------------------------------
 # plan_roles — fallback to all candidates on unparseable JSON
 # ---------------------------------------------------------------------------
+
 
 class TestPlanRoles:
     def _candidates(self) -> List[RoleSpec]:
@@ -441,7 +478,9 @@ class TestPlanRoles:
 
     def test_valid_plan_returned(self, fake_llm, monkeypatch):
         monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
-        plan_json = '{"plan": ["equity_analyst", "rates_analyst"], "reasoning": "macro focus"}'
+        plan_json = (
+            '{"plan": ["equity_analyst", "rates_analyst"], "reasoning": "macro focus"}'
+        )
         llm = fake_llm([openai_text(plan_json)])
         candidates = self._candidates()
         planner_spec = _spec("cio", "gpt-4o-mini")
@@ -482,24 +521,33 @@ class TestPlanRoles:
 # Agent resilience ladder
 # ---------------------------------------------------------------------------
 
-_ERROR_RESP = {"type": "error", "error": {"message": "tool_choice: Input should be an object"}}
+_ERROR_RESP = {
+    "type": "error",
+    "error": {"message": "tool_choice: Input should be an object"},
+}
 _ERROR_RESP2 = {"type": "error", "error": {"message": "persistent error"}}
 
 
 def _make_tool_registry():
-    return ToolRegistry([
-        Tool("get_data", "desc", {"type": "object", "properties": {}}, lambda: "42"),
-    ])
+    return ToolRegistry(
+        [
+            Tool(
+                "get_data", "desc", {"type": "object", "properties": {}}, lambda: "42"
+            ),
+        ]
+    )
 
 
 class TestAgentResilience:
     def test_error_then_retry_without_tools_succeeds(self, fake_llm):
         """Error on a tools call → retry without tools → success parsed as view."""
         final = '{"stance":"BEARISH","conviction":3,"rationale":"retry ok","key_risks":[],"evidence":[]}'
-        llm = fake_llm([
-            _ERROR_RESP,       # first call (with tools) → error
-            openai_text(final),  # retry without tools → success
-        ])
+        llm = fake_llm(
+            [
+                _ERROR_RESP,  # first call (with tools) → error
+                openai_text(final),  # retry without tools → success
+            ]
+        )
         registry = _make_tool_registry()
         agent = Agent(_spec(), tools=registry, max_steps=4)
         view = agent.run("Q?")
@@ -513,15 +561,23 @@ class TestAgentResilience:
 
     def test_persistent_error_returns_api_error_view(self, fake_llm):
         """Both calls error → view with key_risks starting with 'API error'."""
-        llm = fake_llm([
-            _ERROR_RESP,   # first call (with tools) → error
-            _ERROR_RESP2,  # retry without tools → also error
-        ])
+        llm = fake_llm(
+            [
+                _ERROR_RESP,  # first call (with tools) → error
+                _ERROR_RESP2,  # retry without tools → also error
+            ]
+        )
         registry = _make_tool_registry()
         agent = Agent(_spec(), tools=registry, max_steps=4)
         view = agent.run("Q?")
 
         assert any(r.startswith("API error") for r in view.key_risks)
+        # Explicit ERROR outcome — never a plausible NEUTRAL
+        assert view.stance == "ERROR"
+        assert view.conviction == 0
+        assert view.grounded is False
+        assert view.error
+        assert "persistent error" not in view.rationale  # raw text stays in key_risks
 
     def test_error_no_tools_returns_api_error_view(self, fake_llm):
         """Error with no tools → immediate fallback view (no retry)."""
@@ -534,7 +590,8 @@ class TestAgentResilience:
 
     def test_detail_only_gateway_body_takes_api_error_path(self, fake_llm):
         """Gateway body like {"detail": ...} (no choices/content) must be treated
-        as an API error, NOT silently parsed as empty text → '(no parseable response)'."""
+        as an API error, NOT silently parsed as empty text → '(no parseable response)'.
+        """
         llm = fake_llm([{"detail": "Not authenticated"}])
         agent = Agent(_spec(), tools=None, max_steps=4)
         view = agent.run("Q?")
@@ -556,11 +613,15 @@ class TestAgentResilience:
     def test_max_steps_exhausted_triggers_finalization(self, fake_llm):
         """max_steps exhausted while model still tool-calling → one finalization call."""
         final = '{"stance":"NEUTRAL","conviction":3,"rationale":"finalized","key_risks":[],"evidence":[]}'
-        llm = fake_llm([
-            openai_tool_call("get_data", {}),  # step 1 → tool call
-            openai_tool_call("get_data", {}),  # step 2 → tool call (max_steps=2 exhausted)
-            openai_text(final),               # finalization call
-        ])
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),  # step 1 → tool call
+                openai_tool_call(
+                    "get_data", {}
+                ),  # step 2 → tool call (max_steps=2 exhausted)
+                openai_text(final),  # finalization call
+            ]
+        )
         registry = _make_tool_registry()
         agent = Agent(_spec(), tools=registry, max_steps=2)
         view = agent.run("Q?")
@@ -569,9 +630,63 @@ class TestAgentResilience:
         # Finalization response parsed
         assert view.rationale == "finalized"
 
+    def test_tool_error_reason_propagates_to_data_gap_risk(self, fake_llm):
+        """Structured ToolError text surfaces verbatim in the DATA GAP key_risk."""
+        final = '{"stance":"NEUTRAL","conviction":2,"rationale":"thin data","key_risks":[],"evidence":[]}'
+        llm = fake_llm(
+            [
+                openai_tool_call("get_sentiment", {}),
+                openai_text(final),
+            ]
+        )
+
+        def _boom():
+            raise ToolError(
+                "StockTwits has no stream for 'BTC' (tried BTC.X for crypto) — "
+                "asset class may be unsupported on StockTwits"
+            )
+
+        registry = ToolRegistry(
+            [
+                Tool(
+                    "get_sentiment", "desc", {"type": "object", "properties": {}}, _boom
+                ),
+            ]
+        )
+        agent = Agent(_spec(), tools=registry, max_steps=3)
+        view = agent.run("BTC sentiment?")
+
+        gap_risks = [r for r in view.key_risks if r.startswith("DATA GAP")]
+        assert gap_risks, view.key_risks
+        assert "get_sentiment" in gap_risks[0]
+        assert "unsupported on StockTwits" in gap_risks[0]
+
+    def test_prose_refusal_yields_explicit_error_view(self, fake_llm):
+        """4c acceptance: a prose refusal (news analyst) → explicit ERROR view."""
+        refusal = (
+            "I cannot provide a buy or sell recommendation. As a news analyst I "
+            "would defer to the portfolio managers on positioning."
+        )
+        llm = fake_llm([openai_text(refusal)])
+        agent = Agent(_spec(name="news_analyst"), tools=None, max_steps=2)
+        view = agent.run("Latest macro news impact?")
+
+        assert view.stance == "ERROR"
+        assert view.conviction == 0
+        assert view.grounded is False
+        assert view.rationale.startswith("ERROR: model did not return structured JSON")
+        assert "cannot provide" in view.rationale  # raw refusal carried, labelled
+        assert "model did not return structured JSON" in view.key_risks
+
     def test_web_search_forwarded_to_client(self, fake_llm):
         """web_search=True on Agent is forwarded as kwarg to client.chat."""
-        llm = fake_llm([openai_text('{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[],"evidence":[]}')])
+        llm = fake_llm(
+            [
+                openai_text(
+                    '{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[],"evidence":[]}'
+                )
+            ]
+        )
         agent = Agent(_spec(), tools=None, web_search=True, web_search_max_uses=2)
         agent.run("Q?")
 
@@ -587,7 +702,13 @@ class TestAgentResilience:
 
     def test_system_prompt_date_in_captured_call(self, fake_llm):
         """The system message sent to client.chat contains today's date."""
-        llm = fake_llm([openai_text('{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[]}')])
+        llm = fake_llm(
+            [
+                openai_text(
+                    '{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[]}'
+                )
+            ]
+        )
         agent = Agent(_spec())
         agent.run("Q?")
 
@@ -604,7 +725,13 @@ class TestAgentResilience:
 
     def test_json_mode_forwarded_to_client(self, fake_llm):
         """Agent.run always requests json_mode (GPT-only no-op handled in llm/)."""
-        llm = fake_llm([openai_text('{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[]}')])
+        llm = fake_llm(
+            [
+                openai_text(
+                    '{"stance":"NEUTRAL","conviction":3,"rationale":"r","key_risks":[]}'
+                )
+            ]
+        )
         agent = Agent(_spec())
         agent.run("Q?")
 
@@ -616,6 +743,7 @@ class TestAgentResilience:
 # Orchestrator web-search eligibility
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorWebSearch:
     """Verify per-agent web_search flag based on model family and profile setting."""
 
@@ -626,12 +754,14 @@ class TestOrchestratorWebSearch:
         """credit_analyst uses GPT in budget profile → web_search=False forwarded."""
         monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
         # simple=True → 3 analysts + 1 synthesis (no librarian/planner)
-        llm = fake_llm([
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._SYNTH),
-        ])
+        llm = fake_llm(
+            [
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._SYNTH),
+            ]
+        )
         run_committee("Q?", profile="budget", simple=True)
 
         for model, messages, kwargs in llm.calls:
@@ -639,28 +769,34 @@ class TestOrchestratorWebSearch:
             # This verifies that even when simple=True, GPT models aren't getting web_search
             assert kwargs.get("web_search", False) is False
 
-    def test_web_search_max_uses_zero_disables_for_everyone(self, fake_llm, monkeypatch):
+    def test_web_search_max_uses_zero_disables_for_everyone(
+        self, fake_llm, monkeypatch
+    ):
         """If web_search_max_uses=0 in profile, no agent gets web_search=True."""
         from investment_firm.core.roster import load_firm
 
         # Patch load_firm to return a modified firm config with max_uses=0
         base_firm = load_firm()
         import copy
+
         patched = copy.deepcopy(base_firm)
         patched["profiles"]["budget"]["web_search_max_uses"] = 0
         monkeypatch.setattr(
             "investment_firm.core.orchestrator.profile_setting",
             lambda key, default=None, **kwargs: (
-                0 if key == "web_search_max_uses" else
-                base_firm["profiles"]["budget"].get(key, default)
+                0
+                if key == "web_search_max_uses"
+                else base_firm["profiles"]["budget"].get(key, default)
             ),
         )
-        llm = fake_llm([
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._CLEAN_VIEW),
-            openai_text(self._SYNTH),
-        ])
+        llm = fake_llm(
+            [
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._CLEAN_VIEW),
+                openai_text(self._SYNTH),
+            ]
+        )
         run_committee("Q?", profile="budget", simple=True)
 
         for model, messages, kwargs in llm.calls:
@@ -670,6 +806,7 @@ class TestOrchestratorWebSearch:
 # ---------------------------------------------------------------------------
 # runs.py API-error warning
 # ---------------------------------------------------------------------------
+
 
 class TestRunsWarnings:
     """_run_worker should emit warnings for API error risks."""
@@ -710,7 +847,9 @@ class TestRunsWarnings:
         warnings: list = []
 
         if _FALLBACK_RISK in view.key_risks or _FALLBACK_RISK in view.rationale:
-            warnings.append(f"{view.role}: model did not return structured JSON — rationale contains raw text fallback.")
+            warnings.append(
+                f"{view.role}: model did not return structured JSON — rationale contains raw text fallback."
+            )
         for risk in view.key_risks:
             if risk.startswith("API error"):
                 warnings.append(f"{view.role}: API error — {risk}")

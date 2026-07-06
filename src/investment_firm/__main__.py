@@ -1,4 +1,5 @@
 """Enable ``python -m investment_firm``."""
+
 from __future__ import annotations
 
 from .interfaces.cli import main

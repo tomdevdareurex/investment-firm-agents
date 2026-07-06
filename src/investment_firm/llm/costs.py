@@ -4,6 +4,7 @@ These weights are **rough, unit-less, and editable** — they exist only to comp
 choices and guard a per-run budget. The live source of truth for real capabilities and
 limits is the ``/ai/models`` endpoint; actual monthly usage comes from ``/ai/tokens``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

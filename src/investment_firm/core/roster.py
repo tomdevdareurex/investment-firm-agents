@@ -6,6 +6,7 @@ models; roles sharing a tier are assigned round-robin for cognitive diversity, u
 role pins a ``family:`` hint or an explicit ``model:``. This module is pure (no network,
 no LLM calls) so it is fully offline-testable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -52,7 +53,7 @@ def resolve_profile(name: Optional[str] = None, firm: Optional[dict] = None) -> 
     """
     firm = firm or load_firm()
     profiles = firm.get("profiles") or {}
-    candidate = (name or config.profile() or firm.get("default_profile") or "balanced")
+    candidate = name or config.profile() or firm.get("default_profile") or "balanced"
     if candidate not in profiles:
         raise RosterError(
             f"Unknown profile {candidate!r}. Available: {', '.join(sorted(profiles))}"
@@ -149,8 +150,13 @@ def resolve_roles(
     return resolved
 
 
-def profile_setting(key: str, default: Any = None, *, profile: Optional[str] = None,
-                    firm: Optional[dict] = None) -> Any:
+def profile_setting(
+    key: str,
+    default: Any = None,
+    *,
+    profile: Optional[str] = None,
+    firm: Optional[dict] = None,
+) -> Any:
     """Return a scalar setting (e.g. ``run_token_budget``) for the active profile."""
     firm = firm or load_firm()
     profile_name = resolve_profile(profile, firm)

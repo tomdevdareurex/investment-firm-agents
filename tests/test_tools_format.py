@@ -3,6 +3,7 @@
 All offline — no network calls. Client-level tests monkeypatch the HTTP transport
 (same pattern as test_client_offline.py); utils/agent tests use FakeLLM.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -19,10 +20,10 @@ from investment_firm.llm.utils import (
 
 from conftest import anthropic_text, openai_text, openai_tool_call
 
-
 # ---------------------------------------------------------------------------
 # HTTP-capture helper (mirrors test_client_offline._capture)
 # ---------------------------------------------------------------------------
+
 
 class _FakeResponse:
     status_code = 200
@@ -54,6 +55,7 @@ def _capture(monkeypatch, **chat_kwargs):
 # A. Claude payload — tool schema conversion
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeToolConversion:
     """OpenAI tools → Anthropic format for Claude models."""
 
@@ -62,7 +64,10 @@ class TestClaudeToolConversion:
         "function": {
             "name": "get_price",
             "description": "Fetch a price",
-            "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}},
+            "parameters": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"}},
+            },
         },
     }
 
@@ -147,15 +152,24 @@ class TestClaudeToolConversion:
 # A. Claude payload — message history conversion
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeMessageConversion:
     """tool-role messages and assistant tool_calls → Anthropic format."""
 
     def test_tool_message_becomes_user_tool_result(self, monkeypatch):
         msgs = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "foo", "arguments": "{}"}}
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "foo", "arguments": "{}"},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "result_data"},
         ]
         payload = _capture(
@@ -166,7 +180,8 @@ class TestClaudeMessageConversion:
         # Find the converted user message with tool_result block
         user_msgs = [m for m in payload["messages"] if m["role"] == "user"]
         tool_result_msgs = [
-            m for m in user_msgs
+            m
+            for m in user_msgs
             if isinstance(m.get("content"), list)
             and any(b.get("type") == "tool_result" for b in m["content"])
         ]
@@ -189,7 +204,8 @@ class TestClaudeMessageConversion:
         )
         # Both tool messages must collapse into exactly ONE user turn
         user_tool_msgs = [
-            m for m in payload["messages"]
+            m
+            for m in payload["messages"]
             if m["role"] == "user"
             and isinstance(m.get("content"), list)
             and any(b.get("type") == "tool_result" for b in m["content"])
@@ -200,10 +216,17 @@ class TestClaudeMessageConversion:
     def test_assistant_with_tool_calls_converted_to_tool_use_blocks(self, monkeypatch):
         msgs = [
             {"role": "user", "content": "q"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "get_data", "arguments": '{"x": 1}'}}
-            ]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "get_data", "arguments": '{"x": 1}'},
+                    }
+                ],
+            },
         ]
         payload = _capture(
             monkeypatch,
@@ -223,6 +246,7 @@ class TestClaudeMessageConversion:
 # ---------------------------------------------------------------------------
 # A. Claude payload — tools + web_search coexistence
 # ---------------------------------------------------------------------------
+
 
 class TestClaudeWebSearchPlusTools:
     """Web search tool appended (not replacing) function tools for Claude."""
@@ -270,8 +294,10 @@ class TestClaudeWebSearchPlusTools:
 
     def test_gemini_web_search_options_coexists_with_tools(self, monkeypatch):
         """Gemini: web_search_options set, tools list preserved (OpenAI pass-through)."""
-        tool = {"type": "function", "function": {"name": "foo", "description": "d",
-                                                   "parameters": {}}}
+        tool = {
+            "type": "function",
+            "function": {"name": "foo", "description": "d", "parameters": {}},
+        }
         payload = _capture(
             monkeypatch,
             model="gemini-2.5-flash",
@@ -291,6 +317,7 @@ class TestClaudeWebSearchPlusTools:
 # ---------------------------------------------------------------------------
 # A. GPT/Gemini payloads unchanged
 # ---------------------------------------------------------------------------
+
 
 class TestNonClaudePayloads:
     """GPT and Gemini receive OpenAI-format tools and tool_choice unchanged."""
@@ -327,6 +354,7 @@ class TestNonClaudePayloads:
 # Utils: extract_tool_calls — Anthropic tool_use blocks
 # ---------------------------------------------------------------------------
 
+
 class TestExtractToolCallsAnthropic:
     """extract_tool_calls normalises Anthropic tool_use blocks to OpenAI style."""
 
@@ -334,10 +362,16 @@ class TestExtractToolCallsAnthropic:
         return {"content": blocks, "stop_reason": "tool_use"}
 
     def test_single_tool_use_normalised(self):
-        resp = self._anthropic_resp([
-            {"type": "tool_use", "id": "tu_1", "name": "get_price",
-             "input": {"ticker": "AAPL"}},
-        ])
+        resp = self._anthropic_resp(
+            [
+                {
+                    "type": "tool_use",
+                    "id": "tu_1",
+                    "name": "get_price",
+                    "input": {"ticker": "AAPL"},
+                },
+            ]
+        )
         calls = extract_tool_calls(resp)
         assert len(calls) == 1
         c = calls[0]
@@ -349,11 +383,13 @@ class TestExtractToolCallsAnthropic:
         assert parsed == {"ticker": "AAPL"}
 
     def test_multiple_tool_use_blocks(self):
-        resp = self._anthropic_resp([
-            {"type": "tool_use", "id": "tu_1", "name": "a", "input": {}},
-            {"type": "text", "text": "some text"},
-            {"type": "tool_use", "id": "tu_2", "name": "b", "input": {"k": "v"}},
-        ])
+        resp = self._anthropic_resp(
+            [
+                {"type": "tool_use", "id": "tu_1", "name": "a", "input": {}},
+                {"type": "text", "text": "some text"},
+                {"type": "tool_use", "id": "tu_2", "name": "b", "input": {"k": "v"}},
+            ]
+        )
         calls = extract_tool_calls(resp)
         assert len(calls) == 2
         names = [c["function"]["name"] for c in calls]
@@ -373,6 +409,7 @@ class TestExtractToolCallsAnthropic:
 # ---------------------------------------------------------------------------
 # Utils: assistant_message — Anthropic shape
 # ---------------------------------------------------------------------------
+
 
 class TestAssistantMessageAnthropic:
     """assistant_message returns raw content list for Anthropic responses."""

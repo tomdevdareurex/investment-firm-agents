@@ -3,6 +3,7 @@
 Decision-support only: this package produces analysis and a recommendation for a human
 to act on. It never executes orders or connects to a broker/exchange/wallet.
 """
+
 from __future__ import annotations
 
 __version__ = "0.1.0"

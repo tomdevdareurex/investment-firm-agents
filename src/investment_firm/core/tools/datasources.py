@@ -208,6 +208,61 @@ def compute_risk_metrics(ticker: str, period: str = "1y", level: float = 0.99) -
     }
 
 
+def run_backtest(ticker: str, period: str = "1y", level: float = 0.99) -> dict:
+    """Read-only buy-and-hold backtest for ``ticker`` over ``period``.
+
+    Historical compute only — no orders, positions, or portfolio state. Fetches
+    Yahoo Finance closes and reports the realized buy-and-hold total and
+    annualized return alongside the :func:`investment_firm.core.risk.risk_summary`
+    volatility / drawdown / VaR / ES metrics for the same window.
+
+    Returns are expressed as **percent** figures (``_pct`` suffix). This is a
+    decision-support analysis, never a trade instruction.
+    """
+    _require("yfinance")
+    import yfinance as yf  # type: ignore
+
+    hist = yf.Ticker(ticker).history(period=period)
+    if hist is None or hist.empty:
+        raise ToolError(f"no price data for {ticker!r}")
+
+    close = hist["Close"]
+    prices = list(map(float, close.tolist()))
+    if len(prices) < 2 or prices[0] == 0:
+        raise ToolError(f"insufficient price history for {ticker!r} to backtest")
+
+    as_of = close.index[-1]
+    try:
+        as_of_iso = as_of.date().isoformat()
+    except AttributeError:
+        as_of_iso = str(as_of)
+
+    n_obs = len(prices)
+    total_return = prices[-1] / prices[0] - 1.0
+    # Annualize on a 252-trading-day year from the observed sample length.
+    ann_return = (1.0 + total_return) ** (252.0 / max(n_obs - 1, 1)) - 1.0
+    summary = risk_summary(prices, level=level)
+
+    def _pct(val: object) -> float:
+        return round(float(val) * 100, 2)  # type: ignore[arg-type]
+
+    return {
+        "ticker": ticker.upper(),
+        "period": period,
+        "as_of": as_of_iso,
+        "n_obs": n_obs,
+        "strategy": "buy-and-hold",
+        "total_return_pct": _pct(total_return),
+        "annualized_return_pct": _pct(ann_return),
+        "ann_vol_pct": _pct(summary["ann_vol"]),
+        "max_drawdown_pct": _pct(summary["max_drawdown"]),
+        "hist_var_1d_pct": _pct(summary["hist_var_1d"]),
+        "es_1d_pct": _pct(summary["es_1d"]),
+        "var_level": summary["var_level"],
+        "source": "computed from yfinance closes (buy-and-hold; risk via risk.py)",
+    }
+
+
 # --- Technical indicators (yfinance + stockstats, shared chart engine) -----
 
 
@@ -374,6 +429,21 @@ def get_stocktwits_sentiment(symbol: str, limit: int = 30) -> dict:
     limit = max(1, min(int(limit), 30))
     url = f"https://api.stocktwits.com/api/2/streams/symbol/{sym}.json"
     resp = requests.get(url, timeout=30)
+    if resp.status_code == 404 and not sym.endswith(".X"):
+        # Crypto streams use a ".X" suffix on StockTwits (e.g. BTC.X).
+        crypto_sym = f"{sym}.X"
+        crypto_url = (
+            f"https://api.stocktwits.com/api/2/streams/symbol/{crypto_sym}.json"
+        )
+        retry = requests.get(crypto_url, timeout=30)
+        if retry.status_code == 200:
+            sym = crypto_sym
+            resp = retry
+        else:
+            raise ToolError(
+                f"StockTwits has no stream for {symbol!r} (tried {crypto_sym} for "
+                "crypto) — asset class may be unsupported on StockTwits"
+            )
     if resp.status_code != 200:
         raise ToolError(f"StockTwits HTTP {resp.status_code} for {sym!r}")
     try:
@@ -700,6 +770,39 @@ _RISK_TOOL = Tool(
 )
 
 
+_BACKTEST_TOOL = Tool(
+    name="run_backtest",
+    description=(
+        "Run a read-only buy-and-hold backtest for a stock/ETF ticker over a lookback "
+        "window using Yahoo Finance closes. Reports realized total and annualized return "
+        "plus annualized volatility, max drawdown, 1-day historical VaR and Expected "
+        "Shortfall (all percent figures). Historical compute only — never a trade "
+        "instruction. Use to quantify how an asset would have performed over a period."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ticker": {
+                "type": "string",
+                "description": "Yahoo Finance ticker symbol, e.g. 'AAPL' or 'EUFN'",
+            },
+            "period": {
+                "type": "string",
+                "description": "Lookback period, e.g. '1y', '6mo', '2y', '5y'",
+                "default": "1y",
+            },
+            "level": {
+                "type": "number",
+                "description": "VaR/ES confidence level between 0 and 1 (default 0.99)",
+                "default": 0.99,
+            },
+        },
+        "required": ["ticker"],
+    },
+    func=run_backtest,
+)
+
+
 _INDICATORS_TOOL = Tool(
     name="get_indicators",
     description=(
@@ -853,6 +956,7 @@ def default_data_tools() -> List[Tool]:
         _WORLDBANK_TOOL,
         _EDGAR_TOOL,
         _RISK_TOOL,
+        _BACKTEST_TOOL,
         _FRED_TOOL,
         _PREDICTION_MARKET_TOOL,
         _STOCKTWITS_TOOL,

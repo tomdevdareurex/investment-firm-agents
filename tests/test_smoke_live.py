@@ -4,6 +4,7 @@ Deselected by default (pyproject sets ``-m 'not live'``). Run explicitly with:
     python -m pytest -m live
 They skip automatically when no API key is configured.
 """
+
 from __future__ import annotations
 
 import pytest

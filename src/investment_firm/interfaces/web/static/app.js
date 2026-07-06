@@ -42,6 +42,7 @@ function stanceBadge(stance) {
     BULLISH: 'badge--bullish',
     BEARISH: 'badge--bearish',
     NEUTRAL: 'badge--neutral-stance',
+    ERROR: 'badge--error',
   }[stance] || 'badge--neutral-stance';
   const span = document.createElement('span');
   span.className = `badge ${cls}`;
@@ -55,6 +56,7 @@ function recBadge(rec) {
     SELL:  'badge--sell',
     HOLD:  'badge--hold',
     AVOID: 'badge--avoid',
+    ERROR: 'badge--error',
   }[rec] || 'badge--hold';
   const span = document.createElement('span');
   span.className = `badge badge--rec ${cls}`;
@@ -283,6 +285,8 @@ async function runPreview(e) {
 
 let _pollTimer = null;
 let _runStart  = null;
+let _eventSource = null;
+let _currentRunId = null;
 
 function setRunBtnState(running) {
   const btn = document.getElementById('btn-run');
@@ -307,6 +311,12 @@ function renderMemoTab(result) {
   header.appendChild(el('span', 'memo-label', 'Recommendation: '));
   header.appendChild(recBadge(result.recommendation));
   panel.appendChild(header);
+
+  if (result.synth_role) {
+    const model = result.synth_model ? ` (${result.synth_model})` : '';
+    const attribution = `Final recommendation issued by ${result.synth_role.toUpperCase()}${model}`;
+    panel.appendChild(el('p', 'memo-attribution', attribution));
+  }
 
   panel.appendChild(el('h3', 'section-title', 'Summary'));
   panel.appendChild(textBlock(result.summary, 'memo-summary'));
@@ -345,6 +355,11 @@ function renderReasoningTab(result) {
     const modelLine = el('p', 'analyst-model');
     modelLine.appendChild(el('span', 'model-name', view.model));
     card.appendChild(modelLine);
+
+    // Explicit ERROR outcome
+    if (view.stance === 'ERROR') {
+      card.appendChild(el('div', 'error-box', `ERROR — ${view.error || view.rationale || 'analysis step failed'}`));
+    }
 
     // Rationale
     card.appendChild(el('h4', 'analyst-section-title', 'Rationale'));
@@ -406,15 +421,24 @@ function renderDebateTab(result) {
 
   panel.appendChild(el('h3', 'section-title', 'Bull / Bear Debate'));
   debate.forEach((turn) => {
-    const side = (turn.speaker || '').toLowerCase();
-    const card = el('div', `debate-turn debate-turn--${side || 'other'}`);
+    const speaker = (turn.speaker || '').toLowerCase();
+    const side = speaker.includes('bull')
+      ? 'bull'
+      : speaker.includes('bear')
+      ? 'bear'
+      : 'other';
+    const card = el('div', `debate-turn debate-turn--${side}`);
     card.appendChild(el('span', 'debate-speaker', turn.speaker || '?'));
     card.appendChild(textBlock(turn.text || '', 'debate-text'));
     panel.appendChild(card);
   });
 
   if (result.debate_summary) {
-    panel.appendChild(el('h3', 'section-title', 'Debate Verdict'));
+    const judge = result.debate_judge_role
+      ? `Debate Verdict — ${result.debate_judge_role.toUpperCase()} as referee` +
+        (result.debate_judge_model ? ` (${result.debate_judge_model})` : '')
+      : 'Debate Verdict';
+    panel.appendChild(el('h3', 'section-title', judge));
     panel.appendChild(textBlock(result.debate_summary, 'debate-verdict'));
   }
 }
@@ -494,6 +518,80 @@ function renderResults(result) {
   renderBriefingTab(result);
   renderSourcesTab(result);
   renderCostsTab(result);
+  renderConsultantTab(result);
+}
+
+function renderConsultantTab(result) {
+  const panel = document.getElementById('tab-consultant');
+  panel.textContent = '';
+  panel.appendChild(el('h3', 'section-title', 'Read-only Quant Consultant'));
+  panel.appendChild(
+    el(
+      'p',
+      'memo-question',
+      'Ask about this completed run — reasoning, indicators, or a read-only backtest. ' +
+        'Analysis only; the consultant cannot trade or change anything.'
+    )
+  );
+
+  const controls = el('div', 'consultant-controls');
+  const modelInput = document.createElement('input');
+  modelInput.type = 'text';
+  modelInput.id = 'consultant-model';
+  modelInput.className = 'consultant-model';
+  modelInput.placeholder = 'model (default claude-4.8-opus)';
+  controls.appendChild(modelInput);
+  panel.appendChild(controls);
+
+  const log = el('div', 'consultant-log');
+  log.id = 'consultant-log';
+  panel.appendChild(log);
+
+  const form = el('div', 'consultant-form');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.id = 'consultant-input';
+  input.className = 'consultant-input';
+  input.placeholder = 'Ask the consultant…';
+  const send = el('button', 'btn consultant-send', 'Send');
+  send.type = 'button';
+
+  function appendBubble(role, text) {
+    const bubble = el('div', `consultant-bubble consultant-bubble--${role}`);
+    bubble.appendChild(el('span', 'consultant-role', role === 'user' ? 'You' : 'Consultant'));
+    bubble.appendChild(textBlock(text, 'consultant-text'));
+    log.appendChild(bubble);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const message = input.value.trim();
+    if (!message || !_currentRunId) return;
+    appendBubble('user', message);
+    input.value = '';
+    send.disabled = true;
+    try {
+      const data = await fetchJson(`/api/runs/${_currentRunId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, model: modelInput.value.trim() || null }),
+      });
+      appendBubble('assistant', data.answer || '(no answer)');
+    } catch (err) {
+      appendBubble('assistant', `Error: ${err.message}`);
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  }
+
+  send.addEventListener('click', sendMessage);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendMessage();
+  });
+  form.appendChild(input);
+  form.appendChild(send);
+  panel.appendChild(form);
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────
@@ -525,6 +623,88 @@ function stopPolling() {
   }
 }
 
+// ── Live step-event stream (SSE) ────────────────────────────────────
+
+function stopEventStream() {
+  if (_eventSource) {
+    _eventSource.close();
+    _eventSource = null;
+  }
+}
+
+function _ensureFeed() {
+  const panel = document.getElementById('tab-reasoning');
+  let feed = document.getElementById('live-feed');
+  if (!feed) {
+    panel.textContent = '';
+    panel.appendChild(el('h3', 'section-title', 'Live Activity'));
+    feed = document.createElement('ul');
+    feed.id = 'live-feed';
+    feed.className = 'live-feed';
+    panel.appendChild(feed);
+  }
+  return feed;
+}
+
+function _appendFeedLine(ev) {
+  const feed = _ensureFeed();
+  const li = document.createElement('li');
+  li.className = 'live-feed-item';
+  const who = ev.agent ? ` ${ev.agent}` : '';
+  const model = ev.model ? ` (${ev.model})` : '';
+  const detail = ev.detail ? ` — ${ev.detail}` : '';
+  // textContent only — never innerHTML (XSS-safe).
+  li.textContent = `${ev.kind}${who}${model}${detail}`.slice(0, 240);
+  feed.appendChild(li);
+}
+
+function _appendLiveDebateTurn(ev) {
+  const panel = document.getElementById('tab-debate');
+  let wrap = document.getElementById('live-debate');
+  if (!wrap) {
+    panel.textContent = '';
+    panel.appendChild(el('h3', 'section-title', 'Bull / Bear Debate (live)'));
+    wrap = document.createElement('div');
+    wrap.id = 'live-debate';
+    panel.appendChild(wrap);
+  }
+  const speaker = (ev.agent || '').toLowerCase();
+  const side = speaker.includes('bull')
+    ? 'bull'
+    : speaker.includes('bear')
+    ? 'bear'
+    : 'other';
+  const card = el('div', `debate-turn debate-turn--${side}`);
+  card.appendChild(el('span', 'debate-speaker', ev.agent || '?'));
+  card.appendChild(textBlock(ev.detail || '', 'debate-text'));
+  wrap.appendChild(card);
+}
+
+function startEventStream(runId) {
+  stopEventStream();
+  if (typeof EventSource === 'undefined') return;
+  let es;
+  try {
+    es = new EventSource(`/api/runs/${runId}/events`);
+  } catch (err) {
+    return; // polling remains the source of truth
+  }
+  _eventSource = es;
+  es.onmessage = (msg) => {
+    let ev;
+    try {
+      ev = JSON.parse(msg.data);
+    } catch (err) {
+      return;
+    }
+    if (!ev || !ev.kind) return;
+    _appendFeedLine(ev);
+    if (ev.kind === 'debate_turn') _appendLiveDebateTurn(ev);
+  };
+  es.addEventListener('end', () => stopEventStream());
+  es.onerror = () => stopEventStream(); // fall back to the 3s poll
+}
+
 async function pollRun(runId) {
   try {
     const data = await fetchJson(`/api/runs/${runId}`);
@@ -532,6 +712,7 @@ async function pollRun(runId) {
 
     if (data.status === 'done') {
       stopPolling();
+      stopEventStream();
       setRunBtnState(false);
       showStatusBar(`Done${elapsed}`, 'status-done');
       if (data.result) {
@@ -544,6 +725,7 @@ async function pollRun(runId) {
 
     if (data.status === 'error') {
       stopPolling();
+      stopEventStream();
       setRunBtnState(false);
       showStatusBar(`Error: ${data.error || 'unknown'}`, 'status-error');
       return;
@@ -606,9 +788,11 @@ async function startRun() {
     });
 
     const runId = data.run_id;
+    _currentRunId = runId;
     showStatusBar('queued… 0s', 'status-running');
 
     stopPolling();
+    startEventStream(runId);
     _pollTimer = setInterval(() => pollRun(runId), POLL_INTERVAL_MS);
     // First poll immediately
     pollRun(runId);

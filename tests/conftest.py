@@ -24,6 +24,7 @@ Helpers
 * ``anthropic_text(text)`` — build a minimal Anthropic text response
 * ``openai_tool_call(name, args_dict, call_id)`` — build a tool-call response
 """
+
 from __future__ import annotations
 
 import json
@@ -31,17 +32,20 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Response-builder helpers
 # ---------------------------------------------------------------------------
+
 
 def openai_text(text: str, inp: int = 10, out: int = 10) -> dict:
     """Minimal OpenAI-shaped text response."""
     return {
         "choices": [{"message": {"content": text, "tool_calls": None}}],
-        "usage": {"prompt_tokens": inp, "completion_tokens": out,
-                  "total_tokens": inp + out},
+        "usage": {
+            "prompt_tokens": inp,
+            "completion_tokens": out,
+            "total_tokens": inp + out,
+        },
     }
 
 
@@ -78,14 +82,14 @@ def openai_tool_call(
                 }
             }
         ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 10,
-                  "total_tokens": 20},
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
     }
 
 
 # ---------------------------------------------------------------------------
 # FakeLLM class
 # ---------------------------------------------------------------------------
+
 
 class FakeLLM:
     """Scriptable replacement for ``investment_firm.llm.client.chat``.
@@ -122,14 +126,13 @@ class FakeLLM:
         return resp
 
     def assert_call_count(self, n: int) -> None:
-        assert len(self.calls) == n, (
-            f"Expected {n} LLM call(s), got {len(self.calls)}"
-        )
+        assert len(self.calls) == n, f"Expected {n} LLM call(s), got {len(self.calls)}"
 
 
 # ---------------------------------------------------------------------------
 # Pytest fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def fake_llm(monkeypatch):
@@ -145,6 +148,7 @@ def fake_llm(monkeypatch):
     The fixture patches ``investment_firm.llm.client.chat`` so **all** code
     paths that import and call ``client.chat`` use the fake.
     """
+
     def _make(responses: List[dict]) -> FakeLLM:
         llm = FakeLLM(responses)
         monkeypatch.setattr("investment_firm.llm.client.chat", llm)

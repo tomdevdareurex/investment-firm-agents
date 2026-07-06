@@ -113,6 +113,45 @@ class TestStockTwits:
         with pytest.raises(ToolError):
             ds.get_stocktwits_sentiment("AAPL")
 
+    def test_crypto_404_retries_with_x_suffix(self, monkeypatch):
+        """BTC → 404, BTC.X → 200; payload reports the resolved symbol."""
+        seen = []
+
+        def handler(url, **kw):
+            seen.append(url)
+            if "BTC.X.json" in url:
+                return _Resp(json_data=self._stream(3, 1, 0))
+            return _Resp(status=404)
+
+        _patch_get(monkeypatch, handler)
+        out = ds.get_stocktwits_sentiment("btc")
+        assert out["symbol"] == "BTC.X"
+        assert out["bullish"] == 3
+        assert len(seen) == 2
+
+    def test_crypto_404_both_raises_structured_message(self, monkeypatch):
+        """404 on both plain and .X symbol → explicit unsupported-asset ToolError."""
+        _patch_get(monkeypatch, lambda url, **kw: _Resp(status=404))
+        with pytest.raises(ToolError) as exc:
+            ds.get_stocktwits_sentiment("BTC")
+        msg = str(exc.value)
+        assert "no stream for 'BTC'" in msg
+        assert "BTC.X" in msg
+        assert "unsupported" in msg
+
+    def test_x_suffix_symbol_404_no_double_retry(self, monkeypatch):
+        """Already-suffixed symbols fail with a plain HTTP error, no retry loop."""
+        seen = []
+
+        def handler(url, **kw):
+            seen.append(url)
+            return _Resp(status=404)
+
+        _patch_get(monkeypatch, handler)
+        with pytest.raises(ToolError):
+            ds.get_stocktwits_sentiment("BTC.X")
+        assert len(seen) == 1
+
 
 class TestAlphaVantage:
     _OVERVIEW = {

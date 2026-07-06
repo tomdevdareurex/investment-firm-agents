@@ -4,6 +4,7 @@
 (``choices[].message.content``) while Claude replies arrive in Anthropic format
 (``content[].text``). These helpers hide that difference so every model "just works".
 """
+
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -158,14 +159,16 @@ def extract_tool_calls(resp: dict) -> list:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "tool_use":
-                normalized.append({
-                    "id": block.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name", ""),
-                        "arguments": _json.dumps(block.get("input", {})),
-                    },
-                })
+                normalized.append(
+                    {
+                        "id": block.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name", ""),
+                            "arguments": _json.dumps(block.get("input", {})),
+                        },
+                    }
+                )
         return normalized
 
     return []
@@ -196,11 +199,13 @@ def extract_citations(resp: object) -> list:
         if not isinstance(url, str) or not url or url in seen:
             return
         seen.add(url)
-        out.append({
-            "url": url,
-            "title": title if isinstance(title, str) else "",
-            "origin": origin,
-        })
+        out.append(
+            {
+                "url": url,
+                "title": title if isinstance(title, str) else "",
+                "origin": origin,
+            }
+        )
 
     # OpenAI shape (Gemini grounding annotations)
     choices = resp.get("choices")
@@ -225,7 +230,10 @@ def extract_citations(resp: object) -> list:
                 inner = block.get("content")
                 if isinstance(inner, list):
                     for item in inner:
-                        if isinstance(item, dict) and item.get("type") == "web_search_result":
+                        if (
+                            isinstance(item, dict)
+                            and item.get("type") == "web_search_result"
+                        ):
                             _add(item.get("url"), item.get("title"), "web:claude")
             elif block.get("type") == "text":
                 citations = block.get("citations")

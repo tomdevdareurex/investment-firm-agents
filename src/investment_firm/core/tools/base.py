@@ -1,4 +1,5 @@
 """Tool abstraction and registry for agent tool-calling (M1.5)."""
+
 from __future__ import annotations
 
 import json

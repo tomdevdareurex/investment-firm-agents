@@ -1,4 +1,5 @@
 """Core firm logic: roster, tools, memory, agents, planner, orchestrator (M1.5)."""
+
 from __future__ import annotations
 
 from .agent import Agent

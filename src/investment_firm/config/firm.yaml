@@ -165,7 +165,11 @@ roles:
     mandate: >
       News & macro-events view — interpret recent news and macro releases using web search
       and the macro tools (get_fred_series, get_ecb_rate). State the event, its likely
-      market impact, and label anything you could not verify.
+      market impact, and label anything you could not verify. Always answer in the
+      required JSON schema with your best market-impact read (a stance on likely market
+      direction is analysis, not a buy/sell recommendation — you must provide one).
+      Never refuse, defer, or reply in prose; if evidence is thin, say so in key_risks
+      and lower your conviction instead.
     votes: true
     vote_weight: 1
   bull_researcher:

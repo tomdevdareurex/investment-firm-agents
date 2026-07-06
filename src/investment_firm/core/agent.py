@@ -27,6 +27,7 @@ from ..llm.utils import (
     is_completion_error,
     get_error_message,
 )
+from . import errors, events
 from .memory import ScratchMemory
 from .roster import RoleSpec
 from .schemas import AnalystView, Source
@@ -192,8 +193,15 @@ class Agent:
         *,
         context: str = "",
         tracker: Optional[RunTracker] = None,
+        on_event: Optional[events.EventSink] = None,
     ) -> AnalystView:
         """Run the agent loop and return a parsed :class:`AnalystView`."""
+        events.safe_emit(
+            on_event,
+            events.ANALYST_STARTED,
+            agent=self.spec.name,
+            model=self.spec.model,
+        )
         user = question if not context else f"{context}\n\nQuestion: {question}"
         messages: List[dict] = [
             {"role": "system", "content": self.system_prompt},
@@ -203,7 +211,7 @@ class Agent:
 
         final_text = ""
         grounded_calls = 0
-        data_gaps: List[str] = []
+        data_gaps: List[tuple] = []  # (tool_name, structured failure reason)
         citations: List[dict] = []
         for _ in range(self.max_steps):
             # Budget guard: stop spending if the run budget would be exceeded.
@@ -253,15 +261,17 @@ class Agent:
                         final_text = extract_text(resp2, strict=False)
                         break
                     err_msg = get_error_message(resp2) or err_msg
-                # Both error (or no tools) — return fallback view
-                return AnalystView(
-                    role=self.spec.name,
-                    model=self.spec.model,
-                    stance="NEUTRAL",
-                    conviction=2,
-                    rationale="(no parseable response)",
-                    key_risks=[f"API error: {err_msg}"],
+                # Both error (or no tools) — explicit ERROR view, never fake analysis.
+                # Route through grounding so DATA GAP risks/citations gathered
+                # before the failure survive on the ERROR view.
+                error_view = self._apply_grounding(
+                    errors.api_error_view(self.spec.name, self.spec.model, err_msg),
+                    grounded_calls,
+                    data_gaps,
+                    citations,
                 )
+                self._emit_done(on_event, error_view)
+                return error_view
 
             citations.extend(extract_citations(resp))
 
@@ -275,6 +285,14 @@ class Agent:
                     fn = call.get("function", {}) if isinstance(call, dict) else {}
                     name = fn.get("name", "")
                     args = fn.get("arguments", "{}")
+                    events.safe_emit(
+                        on_event,
+                        events.TOOL_CALLED,
+                        agent=self.spec.name,
+                        model=self.spec.model,
+                        detail=name,
+                        data={"arguments": str(args)[:200]},
+                    )
                     result = self.tools.dispatch(name, args)
                     note = f"{name}({args}) -> {result[:200]}"
                     try:
@@ -287,11 +305,27 @@ class Agent:
                     if is_gap:
                         err = ""
                         if isinstance(parsed, dict):
-                            err = str(parsed.get("error", ""))[:120]
-                        data_gaps.append(name)
-                        note = f"DATA GAP: {name}: {err or 'unparseable result'}"
+                            err = str(parsed.get("error", ""))[:200]
+                        reason = err or "unparseable result"
+                        data_gaps.append((name, reason))
+                        note = f"DATA GAP: {name}: {reason}"
+                        events.safe_emit(
+                            on_event,
+                            events.TOOL_ERROR,
+                            agent=self.spec.name,
+                            model=self.spec.model,
+                            detail=name,
+                            data={"reason": reason},
+                        )
                     else:
                         grounded_calls += 1
+                        events.safe_emit(
+                            on_event,
+                            events.TOOL_RESULT,
+                            agent=self.spec.name,
+                            model=self.spec.model,
+                            detail=name,
+                        )
                         if isinstance(parsed, dict):
                             stale = _staleness_note(name, parsed)
                             if stale:
@@ -337,13 +371,32 @@ class Agent:
                 final_text = extract_text(fin_resp, strict=False)
 
         view = self._parse(final_text)
-        return self._apply_grounding(view, grounded_calls, data_gaps, citations)
+        grounded = self._apply_grounding(view, grounded_calls, data_gaps, citations)
+        self._emit_done(on_event, grounded)
+        return grounded
+
+    def _emit_done(
+        self, on_event: Optional[events.EventSink], view: AnalystView
+    ) -> None:
+        """Emit the analyst_done step event summarizing the produced view."""
+        events.safe_emit(
+            on_event,
+            events.ANALYST_DONE,
+            agent=self.spec.name,
+            model=self.spec.model,
+            detail=view.stance,
+            data={
+                "stance": view.stance,
+                "conviction": view.conviction,
+                "grounded": view.grounded,
+            },
+        )
 
     def _apply_grounding(
         self,
         view: AnalystView,
         grounded_calls: int,
-        data_gaps: List[str],
+        data_gaps: List[tuple],
         citations: List[dict],
     ) -> AnalystView:
         """Enforce the freshness gate: flag ungrounded views and tool data gaps."""
@@ -355,16 +408,17 @@ class Agent:
                 seen.add(url)
                 sources.append(Source(**cite))
         view.citations = sources
-        view.grounded = grounded_calls > 0 or bool(sources)
+        is_error_view = view.stance == "ERROR"
+        # ERROR views never count as grounded: data may have been gathered, but
+        # no analysis was produced from it.
+        view.grounded = (not is_error_view) and (grounded_calls > 0 or bool(sources))
         extra: List[str] = []
-        if not view.grounded:
+        if not view.grounded and not is_error_view:
             extra.append(
                 "UNVERIFIED: no live data obtained — figures are training-data estimates"
             )
-        for name in data_gaps:
-            extra.append(
-                f"DATA GAP: {name} failed — dependent figures inferred, not measured"
-            )
+        for name, reason in data_gaps:
+            extra.append(f"DATA GAP: {name}: {reason}")
         for risk in extra[:4]:
             if risk not in view.key_risks:
                 view.key_risks.append(risk)
@@ -401,13 +455,9 @@ class Agent:
         salvaged = _salvage_fields(text)
         if salvaged is not None:
             return self._to_view(salvaged)
-        # 3) Total fallback: keep the run alive with the raw text as rationale.
+        # 3) Total fallback: explicit ERROR view carrying the raw text, clearly
+        # marked as a failure — never a plausible-looking NEUTRAL.
         self.memory.remember(f"unparseable model output: {text[:200]!r}")
-        return AnalystView(
-            role=self.spec.name,
-            model=self.spec.model,
-            stance="NEUTRAL",
-            conviction=2,
-            rationale=_strip_fences(text)[:600] or "(no parseable response)",
-            key_risks=["model did not return structured JSON"],
+        return errors.parse_error_view(
+            self.spec.name, self.spec.model, _strip_fences(text)
         )

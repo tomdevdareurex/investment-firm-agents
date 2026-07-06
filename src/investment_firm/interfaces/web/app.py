@@ -17,6 +17,7 @@ Run::
 
 Requires the ``.[api]`` extra (fastapi + uvicorn).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +31,7 @@ try:
 except ImportError as _exc:  # pragma: no cover
     raise RuntimeError(
         "FastAPI not installed. Run:\n"
-        "    .venv\\Scripts\\python.exe -m pip install -e \".[api]\""
+        '    .venv\\Scripts\\python.exe -m pip install -e ".[api]"'
     ) from _exc
 
 import investment_firm
@@ -79,6 +80,7 @@ app.include_router(_market_router)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _load() -> dict:
     """Load firm.yaml (cached by lru_cache in roster)."""
     return load_firm()
@@ -88,11 +90,7 @@ def _tier_models_for_profile(profile_name: str, firm: dict) -> Dict[str, List[st
     """Return {tier: [model, ...]} for a profile."""
     profile_cfg = firm.get("profiles", {}).get(profile_name, {})
     tiers = ["WORKER", "SENIOR", "AUTHORITY", "HEAD"]
-    return {
-        t: list(profile_cfg.get(t, []))
-        for t in tiers
-        if profile_cfg.get(t)
-    }
+    return {t: list(profile_cfg.get(t, [])) for t in tiers if profile_cfg.get(t)}
 
 
 def _preview_roles(profile_name: str, simple: bool) -> List[Dict[str, str]]:
@@ -127,6 +125,7 @@ def _preview_roles(profile_name: str, simple: bool) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @app.get("/", include_in_schema=False)
 def serve_index() -> FileResponse:
@@ -197,8 +196,12 @@ def get_profiles() -> Dict[str, Any]:
 
 @app.get("/api/preview")
 def preview(
-    question: str = Query(default="", description="The investment question (optional for preview)."),
-    profile: Optional[str] = Query(default=None, description="Profile name (default: yaml default)."),
+    question: str = Query(
+        default="", description="The investment question (optional for preview)."
+    ),
+    profile: Optional[str] = Query(
+        default=None, description="Profile name (default: yaml default)."
+    ),
     simple: bool = Query(default=False, description="Use simple fixed-analyst mode."),
 ) -> Dict[str, Any]:
     """Preview which roles/models would run — zero API/LLM calls.
@@ -219,7 +222,9 @@ def preview(
         ) from exc
 
     roles = _preview_roles(profile_name, simple=simple)
-    budget = int(profile_setting("run_token_budget", 0, profile=profile_name, firm=firm) or 0)
+    budget = int(
+        profile_setting("run_token_budget", 0, profile=profile_name, firm=firm) or 0
+    )
 
     return {
         "profile": profile_name,
