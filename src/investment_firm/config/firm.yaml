@@ -15,6 +15,7 @@ profiles:
     web_search_max_uses: 1
     max_parallel: 3
     run_token_budget: 60000
+    max_debate_rounds: 1         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
 
   balanced:      # DEFAULT — Opus 4.8 only where it counts
@@ -25,6 +26,7 @@ profiles:
     web_search_max_uses: 3
     max_parallel: 5
     run_token_budget: 150000
+    max_debate_rounds: 2         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
 
   premium:       # max quality — the "one higher"
@@ -35,6 +37,7 @@ profiles:
     web_search_max_uses: 5
     max_parallel: 8
     run_token_budget: 400000
+    max_debate_rounds: 3         # bull/bear rounds (0 disables the debate)
     cio_cross_check: true        # CIO ruling cross-checked by gpt-5.5
 
 # ---------------------------------------------------------------------------
@@ -43,7 +46,9 @@ profiles:
 data_sources:
   market_data:
     enabled: [yfinance, ecb, edgar, worldbank]   # all free, no key (edgar needs User-Agent)
-    optional: [fred, stooq]                       # fred=free key; stooq=no key, price cross-check
+    optional: [fred, stooq, openbb]               # fred=free key; stooq=no key, price cross-check;
+                                                  # openbb=keyless (treasury curve, Cboe options, OECD CPI),
+                                                  # tools auto-enable when the .[openbb] extra is installed
     cross_check_prices: [yfinance, stooq]         # flag disagreements in the briefing packet
   web_research:
     provider: dbag_web_search    # dbag_web_search (generic flag, all models) | perplexity_sonar | none
@@ -135,6 +140,50 @@ roles:
     mandate: Rates view — curve, duration.
     votes: true
     vote_weight: 1
+  technical_analyst:
+    group: research
+    tier: WORKER
+    mandate: >
+      Technical view — ground momentum, trend, and volatility calls in real indicator
+      values via the get_indicators tool (EMA/SMA, MACD, RSI, Bollinger, ATR). Cite the
+      exact figures and what they imply; never eyeball the chart or invent levels.
+    votes: true
+    vote_weight: 1
+  sentiment_analyst:
+    group: research
+    tier: WORKER
+    mandate: >
+      Retail/social sentiment view — read short-term mood with the get_stocktwits_sentiment
+      tool. Report bullish/bearish/mixed with the sample counts, and flag that retail
+      sentiment is noisy and weakly evidenced.
+    votes: true
+    vote_weight: 1
+  news_analyst:
+    group: research
+    tier: WORKER
+    family: claude            # needs web search for current news — never a GPT model
+    mandate: >
+      News & macro-events view — interpret recent news and macro releases using web search
+      and the macro tools (get_fred_series, get_ecb_rate). State the event, its likely
+      market impact, and label anything you could not verify.
+    votes: true
+    vote_weight: 1
+  bull_researcher:
+    group: research
+    tier: SENIOR
+    family: gpt              # adversarial diversity: bull=GPT vs bear=Claude
+    mandate: >
+      Bull researcher — in the investment debate, build the strongest evidence-based
+      BULLISH case from the analyst views and briefing, rebutting the bear directly.
+      Decision-support only; label unverified figures.
+  bear_researcher:
+    group: research
+    tier: SENIOR
+    family: claude           # adversarial diversity: bear=Claude vs bull=GPT
+    mandate: >
+      Bear researcher — in the investment debate, build the strongest evidence-based
+      BEARISH case from the analyst views and briefing, rebutting the bull directly.
+      Decision-support only; label unverified figures.
   fx_strategist:
     group: research
     tier: WORKER
@@ -189,6 +238,7 @@ roles:
   research_librarian:
     group: data
     tier: WORKER
+    family: claude            # needs native web search — never a GPT model
     mandate: >
       Build the ONE shared briefing packet from structured market_data + qualitative
       web_research + user context. Tag every datapoint with source/as_of/trust.

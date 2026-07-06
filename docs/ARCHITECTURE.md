@@ -19,12 +19,21 @@ llm/
       │
   costs.py       COST_WEIGHTS, estimate_cost, RunTracker
       │
-  client.py      raw httpx POST to /chat/completions (returns raw JSON)
+  backends.py    backend registry (playground | databricks), capabilities,
+      │          per-backend model mapping
+  client.py      raw httpx POST to /chat/completions (returns raw JSON);
+      │          dispatches to databricks_backend when that backend is active
+  databricks_backend.py   lazy OpenAI-compatible adapter via databricks-sdk
+                          (returns response.model_dump() dicts)
 
 core/
   roster.py      firm.yaml reader → RoleSpec (profile + tier → model)
       │
   planner.py     LLM call: pick which analysts to run + order
+      │
+  tools/         Tool / ToolRegistry / ToolError (base.py); free data tools
+      │          (datasources.py); optional OpenBB tools (openbb_datasources.py,
+      │          auto-enabled only when the .[openbb] extra is installed)
       │
   agent.py       tool-using observe-think-act loop → AnalystView
       │
@@ -83,6 +92,22 @@ run_committee(question, profile, simple)
 **simple=True** skips steps 1 and 2 and runs a fixed set of three analysts
 (equity / credit / rates) with no tools. Useful for dry runs.
 
+### Optional OpenBB tools
+
+`core/tools/openbb_datasources.py` adds three keyless tools via the
+[OpenBB Platform](https://github.com/OpenBB-finance/OpenBB) (`.[openbb]`
+extra, imported lazily — never vendored): `get_yield_curve` (US Treasury
+curve, Federal Reserve H.15), `get_options_summary` (Cboe chain summarized
+to put/call ratio / total OI / ATM implied vol — the raw chain is never sent
+to the model), and `get_cpi` (OECD monthly year-over-year CPI). All return
+the same provenance-tagged `source` + `as_of` dicts as `datasources.py`
+(rates and CPI are converted from the providers' decimal fractions to percent).
+`default_openbb_tools()` returns `[]` when openbb is not importable, so
+uninstalled environments never advertise tools that can only fail; when
+present, the orchestrator concatenates them onto `default_data_tools()` for
+the librarian and every analyst. License note: OpenBB is AGPLv3 — the served
+web UI is currently treated as local/personal use.
+
 ### Token budgeting
 
 `profile_setting("run_token_budget")` in `firm.yaml` (e.g. 60 000 for
@@ -133,6 +158,57 @@ bypasses the profile entirely.
 
 ---
 
+## LLM backends (Playground ↔ Databricks)
+
+Two interchangeable backends serve every LLM call; `core/` never branches on
+the provider.
+
+**Selection.** `backends.current_backend()`: runtime override
+(`backends.set_backend`, used by the web UI `POST /api/backend`) →
+`IFA_LLM_BACKEND` env (read lazily) → `playground`. The override lives behind a
+`threading.Lock` because web runs execute in daemon threads.
+
+**Dispatch.** The first thing `client.chat()` does is check the active backend;
+if it is `databricks`, the call is forwarded to `databricks_backend.chat()`
+(lazy import — the default install never needs `databricks-sdk`). The
+Playground code path is unchanged.
+
+**Adapter.** Databricks serving endpoints are OpenAI-compatible;
+`WorkspaceClient().serving_endpoints.get_open_ai_client()` gives a
+pre-authenticated client (auth: `DATABRICKS_HOST`/`DATABRICKS_TOKEN` env →
+`~/.databrickscfg` profile → OAuth after `databricks auth login`; no PATs, no
+keys in `.env`). `chat()` returns `response.model_dump()` — a raw OpenAI-shaped
+dict — so every parser in `llm/utils.py` works unchanged. Provider call
+failures come back as `{"error": {...}}` dicts and take the agent's existing
+resilience ladder (API-error risk, retry without tools); a missing SDK or
+failed auth raises `DatabricksBackendError` with an install + `databricks auth
+login` hint. Function tools pass through in OpenAI format (verified live
+2026-07-04); `json_mode` is a documented no-op (prompt discipline + parse
+cascade, same as non-GPT on the Playground).
+
+**Capabilities instead of family checks.** The orchestrator asks
+`client.supports_web_search_for(model)` → `backends.supports_web_search()`:
+on the Playground this is the Claude/Gemini family rule; on Databricks it is
+always `False` (no web search on model serving). Agents then ground via the
+data tools only — the grounding gate, UNVERIFIED labeling, and citation rules
+are untouched, so no fake web sources appear.
+
+**Model mapping.** Model names stay logical (Playground-style) in `firm.yaml`.
+`backends.map_model()` translates for Databricks: explicit `databricks-*`
+names pass through; `IFA_DBX_MODEL_MAP` (JSON) wins if set; otherwise a
+mechanical transform (`claude-4.6-opus` → `databricks-claude-opus-4-6` —
+variant/version swap; other families dots→dashes, e.g. `gpt-5.4` →
+`databricks-gpt-5-4`). When the live serving-endpoint list is available the
+candidate is validated against it; a miss falls back to
+`IFA_DBX_DEFAULT_MODEL` (default `databricks-claude-sonnet-4-6`) with a
+one-time warning.
+
+**Costs.** `costs.py` maps `databricks-*` names to family "other" (weight
+1.0), so tracking reports raw tokens with a unit-less weight — no crash, no
+fake pricing.
+
+---
+
 ## AI Playground quirks
 
 ### Claude system-message hoist
@@ -163,6 +239,24 @@ mode; requires the word "JSON" in the prompt, which the agent system prompt
 provides). Other families ignore the flag and rely on prompt discipline plus
 the parse cascade. gpt-4o-mini was removed from the budget/balanced WORKER
 tiers (no web search on this gateway); GPT models remain in SENIOR+ tiers.
+
+### Freshness enforcement and real source URLs
+
+Every `Agent.run` tracks (a) successful tool calls — dispatch results that parse
+as JSON without an `"error"` key — and (b) real web-search citations extracted by
+`llm.utils.extract_citations`, which handles both gateway shapes (confirmed live
+2026-07-02): Gemini grounding arrives as OpenAI `choices[0].message.annotations[]`
+entries of `type == "url_citation"` (tagged `origin="web:gemini"`); Claude native
+web search as `web_search_tool_result` content blocks plus `citations` lists on
+`text` blocks (tagged `origin="web:claude"`). A view with neither is marked
+`grounded=False` and gets an "UNVERIFIED: no live data obtained" key_risk; each
+failed tool adds a "DATA GAP" key_risk. Tool results carrying an `as_of` date
+older than the per-tool window (`agent._FRESHNESS_WINDOWS_DAYS`: prices/risk 3d,
+ECB rate 45d, World Bank/EDGAR 400d) get a `stale as_of=<date>` memory note.
+Citations flow as `Source` models into `AnalystView.citations` and are aggregated
+(URL-deduped) into `Memo.web_sources`; the web UI renders them as clickable,
+scheme-checked links and badges ungrounded views. The `research_librarian` pins
+`family: claude` and the orchestrator overrides any non-web-capable resolution.
 
 ### Gemini JSON fences and truncation
 
@@ -215,6 +309,12 @@ GET  /api/runs/{run_id}  Poll a run; includes result envelope when status==done:
                            {recommendation, summary, profile, question, briefing,
                             views, sources, cost_summary, call_records, warnings,
                             disclaimer}
+GET  /api/backend        Active LLM backend + capabilities + degradation note
+POST /api/backend        Switch backend at runtime ({"backend": "databricks"});
+                         unknown names → 400
+GET  /api/market/price-history
+                         Chart-ready Yahoo Finance OHLC + volume data with cache
+                         metadata; zero LLM/API Playground calls
 ```
 
 **Run registry**: in-memory `dict` protected by `threading.Lock`; runs execute
@@ -229,6 +329,16 @@ in the web UI Costs/Warnings tab; a budget warning is appended if
 
 The preview endpoint (`/api/preview`) is the zero-token UX hook; the `/api/runs`
 endpoints wire the full committee pipeline into the browser.
+
+**Market data cache**: `interfaces/web/market_data.py` saves fetched chart
+payloads in SQLite. Default path is `.cache/investment_firm/market_data.sqlite`,
+overrideable via `INVESTMENT_FIRM_MARKET_CACHE`. Cache keys include provider,
+dataset, schema version, ticker, period, and interval. Every response includes
+`cache.enabled`, `cache.hit`, `cache.stored`, `cache.fetched_at`, `cache.expires_at`,
+and `cache.ttl_seconds`. Use `force_refresh=true` to bypass a saved record and
+`cache=false` to skip reads/writes. This cache is deliberately separate from
+`RunMemory` and from the in-memory run registry: it supports research UX and
+auditability, not live execution authority.
 
 Quick-start:
 
@@ -258,6 +368,10 @@ tests/
   test_core_offline.py     agent parsing, tool registry, memory, run_committee
   test_roster.py           resolve_profile, round-robin, family hints, errors
   test_web_offline.py      FastAPI routes via TestClient (no network)
+  test_web_market.py       Market price-history endpoint + SQLite cache behavior
+  test_llm_backends.py     Backend selection, mapping, capabilities, Databricks
+                           adapter (SDK fully mocked)
+  test_web_backend.py      GET/POST /api/backend routes via TestClient
   test_smoke_live.py       opt-in live smoke (@pytest.mark.live)
 ```
 

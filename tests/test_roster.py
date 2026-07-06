@@ -7,6 +7,7 @@ Covers:
 - Explicit per-role model pin overrides profile
 - RosterError on unknown role and unknown profile
 """
+
 from __future__ import annotations
 
 import pytest
@@ -44,11 +45,19 @@ _MINI_FIRM: dict = {
     "roles": {
         "analyst_a": {"group": "research", "tier": "WORKER", "mandate": "View A."},
         "analyst_b": {"group": "research", "tier": "WORKER", "mandate": "View B."},
-        "analyst_c": {"group": "research", "tier": "WORKER", "mandate": "View C.",
-                      "family": "claude"},
+        "analyst_c": {
+            "group": "research",
+            "tier": "WORKER",
+            "mandate": "View C.",
+            "family": "claude",
+        },
         "senior_a": {"group": "research", "tier": "SENIOR", "mandate": "Senior."},
-        "pinned": {"group": "research", "tier": "WORKER", "mandate": "Pinned.",
-                   "model": "special-model-xyz"},
+        "pinned": {
+            "group": "research",
+            "tier": "WORKER",
+            "mandate": "Pinned.",
+            "model": "special-model-xyz",
+        },
     },
 }
 
@@ -56,6 +65,7 @@ _MINI_FIRM: dict = {
 # ---------------------------------------------------------------------------
 # resolve_profile precedence
 # ---------------------------------------------------------------------------
+
 
 class TestResolveProfilePrecedence:
     def test_explicit_name_wins(self, monkeypatch):
@@ -92,6 +102,7 @@ class TestResolveProfilePrecedence:
 # Tier round-robin model assignment
 # ---------------------------------------------------------------------------
 
+
 class TestTierRoundRobin:
     def test_round_robin_two_workers_pricey(self, monkeypatch):
         """Three WORKER roles should round-robin across the two WORKER models."""
@@ -99,13 +110,20 @@ class TestTierRoundRobin:
         firm = {**_MINI_FIRM}
         # Add a third worker with no family hint to test full round-robin
         firm = dict(_MINI_FIRM)
-        firm["roles"] = {**_MINI_FIRM["roles"], "analyst_d": {"group": "r", "tier": "WORKER", "mandate": "D."}}
+        firm["roles"] = {
+            **_MINI_FIRM["roles"],
+            "analyst_d": {"group": "r", "tier": "WORKER", "mandate": "D."},
+        }
         specs = resolve_roles(
             ["analyst_a", "analyst_b", "analyst_d"],
             profile="pricey",
             firm=firm,
         )
-        models = [specs["analyst_a"].model, specs["analyst_b"].model, specs["analyst_d"].model]
+        models = [
+            specs["analyst_a"].model,
+            specs["analyst_b"].model,
+            specs["analyst_d"].model,
+        ]
         # Should use ["claude-4.6-sonnet", "gpt-4.1"] round-robin (3 items → indices 0,1,0)
         assert models[0] == "claude-4.6-sonnet"
         assert models[1] == "gpt-4.1"
@@ -119,13 +137,14 @@ class TestTierRoundRobin:
             profile="pricey",
             firm=_MINI_FIRM,
         )
-        assert specs["analyst_a"].model == "claude-4.6-sonnet"   # WORKER[0]
-        assert specs["senior_a"].model == "claude-4.7-opus"       # SENIOR[0]
+        assert specs["analyst_a"].model == "claude-4.6-sonnet"  # WORKER[0]
+        assert specs["senior_a"].model == "claude-4.7-opus"  # SENIOR[0]
 
 
 # ---------------------------------------------------------------------------
 # Family hint
 # ---------------------------------------------------------------------------
+
 
 class TestFamilyHint:
     def test_family_hint_selects_claude(self, monkeypatch):
@@ -148,7 +167,12 @@ class TestFamilyHint:
                 },
             },
             "roles": {
-                "claude_role": {"group": "r", "tier": "WORKER", "mandate": "x", "family": "claude"},
+                "claude_role": {
+                    "group": "r",
+                    "tier": "WORKER",
+                    "mandate": "x",
+                    "family": "claude",
+                },
             },
         }
         # No claude models in pool → should fall through to round-robin (index 0)
@@ -159,6 +183,7 @@ class TestFamilyHint:
 # ---------------------------------------------------------------------------
 # Explicit per-role model pin
 # ---------------------------------------------------------------------------
+
 
 class TestModelPin:
     def test_explicit_model_overrides_profile(self, monkeypatch):
@@ -176,6 +201,7 @@ class TestModelPin:
 # RosterError cases
 # ---------------------------------------------------------------------------
 
+
 class TestRosterErrors:
     def test_unknown_role_raises(self, monkeypatch):
         monkeypatch.setenv("IFA_PROFILE", "cheap")
@@ -191,6 +217,7 @@ class TestRosterErrors:
 # ---------------------------------------------------------------------------
 # Real firm.yaml integration (uses the actual config/firm.yaml)
 # ---------------------------------------------------------------------------
+
 
 class TestRealFirm:
     def test_profile_names_present(self):
@@ -213,6 +240,7 @@ class TestRealFirm:
 
     def test_resolve_all_candidate_analysts(self, monkeypatch):
         from investment_firm.core.orchestrator import CANDIDATE_ANALYSTS
+
         monkeypatch.delenv("IFA_PROFILE", raising=False)
         specs = resolve_roles(CANDIDATE_ANALYSTS, profile="balanced")
         assert len(specs) == len(CANDIDATE_ANALYSTS)
@@ -236,3 +264,24 @@ class TestRealFirm:
         for profile in ("budget", "balanced"):
             workers = firm["profiles"][profile]["WORKER"]
             assert not any(m.startswith("gpt") for m in workers), workers
+
+    def test_new_analyst_roles_resolve_in_all_profiles(self, monkeypatch):
+        """sentiment/news/technical analysts load and resolve to a model everywhere."""
+        monkeypatch.delenv("IFA_PROFILE", raising=False)
+        roles = ["technical_analyst", "sentiment_analyst", "news_analyst"]
+        for profile in ("budget", "balanced", "premium"):
+            specs = resolve_roles(roles, profile=profile)
+            for role in roles:
+                spec = specs[role]
+                assert spec.tier == "WORKER"
+                assert spec.model  # resolved to a concrete model
+                assert spec.mandate  # non-empty system-prompt mandate
+                assert spec.votes is True
+                assert spec.vote_weight == 1
+
+    def test_news_analyst_pins_web_capable_family(self, monkeypatch):
+        """news_analyst pins Claude so it always resolves to a web-search-capable model."""
+        monkeypatch.delenv("IFA_PROFILE", raising=False)
+        for profile in ("budget", "balanced", "premium"):
+            spec = resolve_roles(["news_analyst"], profile=profile)["news_analyst"]
+            assert spec.model.startswith("claude")

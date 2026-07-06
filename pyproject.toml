@@ -23,6 +23,7 @@ data = [
     "requests>=2.31.0",
     "numpy>=1.26.0",
     "pandas>=2.0.0",
+    "stockstats>=0.6.2",   # technical indicators (BSD) — shared chart + agent engine
 ]
 # M3 — embeddings memory + post-mortem
 embed = [
@@ -34,11 +35,22 @@ api = [
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
 ]
+# Second LLM backend — Databricks model serving (auth via CLI profile / OAuth, no PATs)
+databricks = [
+    "databricks-sdk>=0.30.0",
+]
+# OpenBB Platform — optional keyless market data tools (AGPLv3; local/personal use)
+openbb = [
+    "openbb>=4.3",
+    "openbb-cboe>=1.0",   # keyless options chains (community extension)
+]
 # Tests + notebooks
 dev = [
     "pytest>=8.0.0",
     "jupyter>=1.0.0",
     "ipykernel>=6.29.0",
+    # ruff's native binary is blocked by DBAG group policy; black runs in-process
+    "black>=24.0",
 ]
 
 [project.scripts]

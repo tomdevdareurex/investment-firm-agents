@@ -1,12 +1,14 @@
 # AGENTS.md
-_Last reconciled: 2026-07-01 (M1.7 — Run button live, /api/runs endpoints, results tabs)_
+_Last reconciled: 2026-07-05 (optional OpenBB data tools: yield curve, options summary, CPI)_
 
 ## Overview
 - Buy-side investment firm simulated as orchestrated LLM agents; produces an Investment
   Committee memo (decision-support only, never executes trades).
-- Runs on the Deutsche Börse AI Playground API (one endpoint, many model families).
-- Current milestone: **M1.7** (Run button wired end-to-end; POST/GET /api/runs; results
-  panel with Memo / Reasoning / Briefing / Sources / Costs tabs).
+- Runs on the Deutsche Börse AI Playground API (one endpoint, many model families),
+  with **Databricks model serving** as an interchangeable second backend
+  (Playground monthly quota is account-bound and was exhausted 2026-07).
+- Current milestone: **M1.7+** (Run button end-to-end; /api/runs; results tabs;
+  Databricks backend switch; market charts panel).
 
 ## Architecture
 
@@ -32,7 +34,18 @@ Nothing in `llm/` knows about `core/`.
 - `costs.py` — `COST_WEIGHTS`, `estimate_cost`, `RunTracker` (per-run budget).
 - `client.py` — raw httpx POST to `/chat/completions`; Claude system-hoist + retries;
   Anthropic format conversion (`_convert_tools_for_claude`, `_convert_tool_choice_for_claude`,
-  `_convert_messages_for_claude`); web-search injection (`_apply_web_search`).
+  `_convert_messages_for_claude`); web-search injection (`_apply_web_search`);
+  dispatches to the Databricks adapter when that backend is active;
+  `supports_web_search_for(model)` shim (core never branches on provider).
+- `backends.py` — backend registry (`playground` default | `databricks`); selection
+  precedence `set_backend()` → `IFA_LLM_BACKEND` env → playground; capability
+  advertising (`supports_web_search`, `supports_tools`); per-backend `map_model`.
+- `databricks_backend.py` — lazy adapter via `databricks-sdk`
+  (`WorkspaceClient().serving_endpoints.get_open_ai_client()`); returns
+  OpenAI-shaped dicts so `utils.py` parsers work unchanged; provider failures →
+  `{"error": {...}}` envelopes; no web search (one-time warning). Model mapping:
+  `databricks-*` passthrough → `IFA_DBX_MODEL_MAP` → mechanical transform →
+  live-endpoint validation → `IFA_DBX_DEFAULT_MODEL` fallback.
 
 ### core/
 - `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`;
@@ -53,6 +66,16 @@ Nothing in `llm/` knows about `core/`.
 - `tools/datasources.py` — free read-only tools: `get_prices` (yfinance),
   `get_ecb_rate`, `get_worldbank_indicator`, `get_company_filing` (EDGAR),
   `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via `risk.py`).
+- `tools/openbb_datasources.py` — optional OpenBB Platform tools (keyless providers,
+  provenance-tagged like `datasources.py`): `get_yield_curve` (Fed H.15),
+  `get_options_summary` (Cboe chains, summarized — never raw), `get_cpi` (OECD
+  monthly yoy). `default_openbb_tools()` returns `[]` when the `.[openbb]` extra is
+  not installed, so uninstalled envs never advertise dead tools to the model.
+  Providers return decimal fractions — tools convert to percent.
+  `_patch_static_imports()` works around an upstream builder bug (generated
+  `openbb.package.*` modules import `OBBject_<Model>` names that
+  `openbb_core.app.provider_interface` never exports; seen with openbb 4.7.2).
+  OpenBB is AGPLv3 — treated as local/personal use here.
 - `risk.py` — pure-stdlib quant metrics: `returns_from_prices`, `historical_var`,
   `parametric_var`, `expected_shortfall`, `annualized_vol`, `max_drawdown`,
   `risk_summary`. Positive values = losses (documented sign convention).
@@ -61,13 +84,20 @@ Nothing in `llm/` knows about `core/`.
 - `cli.py` — argparse CLI: `--models/--tokens/--smoke/--probe-websearch/--version`
   + positional `question` (runs the committee).
 - `web/__init__.py` — guards the fastapi import with a clear install message.
-- `web/app.py` — FastAPI app; mounts static files; includes runs router.
-  Routes: `/`, `/api/health`, `/api/profiles`, `/api/preview`.
+- `web/app.py` — FastAPI app; mounts static files; includes runs + market routers.
+  Routes: `/`, `/api/health`, `/api/profiles`, `/api/preview`,
+  `GET/POST /api/backend` (LLM backend switch; unknown name → 400).
 - `web/runs.py` — in-memory run registry (threading.Lock + daemon threads);
   routes: `POST /api/runs`, `GET /api/runs`, `GET /api/runs/{run_id}`.
-- `web/static/` — `index.html`, `app.css`, `app.js`; plain no-build page.
+- `web/market.py` / `web/market_data.py` — market chart endpoints; yfinance with
+  SQLite cache (`.cache/investment_firm/market_data.sqlite`, override
+  `INVESTMENT_FIRM_MARKET_CACHE`); Zscaler SSL via `REQUESTS_CA_BUNDLE` /
+  `CURL_CA_BUNDLE`, explicit opt-out `INVESTMENT_FIRM_MARKET_VERIFY_SSL=false`.
+- `web/static/` — `index.html`, `app.css`, `app.js`, `charts.js`, vendored
+  `lightweight-charts` (candles + volume + SMA 20/50); plain no-build page.
   Run button live: confirm dialog → POST /api/runs → 3s poll → tabbed results
-  (Memo / Reasoning / Briefing / Sources / Costs). All API text via textContent.
+  (Memo / Reasoning / Briefing / Sources / Costs). LLM-backend dropdown in the
+  run form. All API text via textContent.
 
 ### config/
 - `firm.yaml` — single source of truth for roles, tiers, profiles, data sources,
@@ -84,9 +114,16 @@ tests/
   conftest.py              FakeLLM fixture + openai_text/anthropic_text/openai_tool_call builders
   test_client_offline.py   llm/ layer (response shapes, payload construction, web-search)
   test_core_offline.py     agent parsing, tool dispatch, memory, run_committee, planner
+  test_llm_backends.py     backend registry + Databricks adapter (SDK fully mocked)
+  test_citations.py        web-search citations → Source models → memo web_sources
+  test_risk.py             quant metrics (VaR/ES/vol/drawdown sign conventions)
   test_roster.py           resolve_profile precedence, round-robin, family, pin, errors
+  test_tools_format.py     tool schema/dispatch format
+  test_openbb_tools.py     OpenBB tools — gating, schemas, summaries, agent loop (all mocked)
   test_web_offline.py      FastAPI routes via TestClient (no network)
   test_web_runs.py         POST/GET /api/runs — validation, happy path, error path, list
+  test_web_backend.py      GET/POST /api/backend switch
+  test_web_market.py       market chart endpoints + cache
   test_smoke_live.py       opt-in live smoke (@pytest.mark.live)
 ```
 
@@ -98,7 +135,12 @@ Run: `.venv\Scripts\python.exe -m pytest` (offline default).
 
 ## Build & run
 - Install: `python -m venv .venv` then `.venv\Scripts\python.exe -m pip install -e .`
-- Extras: `.[data]` (M1.5), `.[api]` (web UI), `.[dev]` (pytest+jupyter).
+- Extras: `.[data]` (M1.5), `.[api]` (web UI), `.[databricks]` (second backend SDK),
+  `.[openbb]` (OpenBB market-data tools, AGPLv3 — local/personal use),
+  `.[dev]` (pytest+jupyter+black).
+- Backend switch: `IFA_LLM_BACKEND=databricks` (env or `.env`) or the web UI
+  dropdown; Databricks auth via `DATABRICKS_HOST`+`DATABRICKS_TOKEN` env vars
+  (preferred here — the Databricks CLI .exe may be AppLocker-blocked).
 - CLI: `investment-firm "<question>" [--profile budget|balanced|premium] [--simple]`
 - Web: `.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app`
 - Test: `.venv\Scripts\python.exe -m pytest` (offline); `-m live` to spend tokens.
@@ -117,6 +159,17 @@ Run: `.venv\Scripts\python.exe -m pytest` (offline default).
   applies `response_format={"type":"json_object"}` for GPT-family models only
   (family branching stays in `llm/`). budget/balanced WORKER tiers contain only
   Claude/Gemini (web-search-capable); GPT remains in SENIOR+ tiers and premium.
+- Freshness gate: `Agent.run` counts successful tool calls (JSON without an
+  `"error"` key) and web citations (`llm.utils.extract_citations`, both gateway
+  shapes). Views with neither get `grounded=False` plus an "UNVERIFIED" key_risk;
+  failed tools add "DATA GAP" key_risks; stale `as_of` dates (windows in
+  `agent._FRESHNESS_WINDOWS_DAYS`) are flagged in memory notes.
+- Real web-search URLs are carried as `Source` models (url/title/origin/verified)
+  on `AnalystView.citations` and `Memo.web_sources`; the web UI renders them as
+  scheme-checked clickable links (DOM APIs only, never innerHTML).
+- The `research_librarian` pins `family: claude`; the orchestrator additionally
+  overrides any non-Claude/Gemini resolution to a web-capable WORKER model
+  (warn + degrade, never crash).
 
 ## Gotchas for future contributors
 
@@ -149,3 +202,48 @@ the agent loop must preserve this invariant.
 - `AI_PLAYGROUND_VERIFY_SSL` defaults to `false` (Zscaler TLS inspection).
 - Decision-support only: no broker/exchange/wallet connections, no order execution.
 - `DISCLAIMER` from `investment_firm.__init__` appears in every Memo + CLI + web UI.
+
+## Rules for coding agents
+
+**1. Offline tests only, by default.** `pytest` deselects `live` tests via
+`addopts` in `pyproject.toml` — leave that alone. Never run `-m live`,
+`tests/test_smoke_live.py`, or CLI runs against the real API unless the user
+explicitly asks in the current conversation; these spend tokens. Run tests as
+`.venv/Scripts/python.exe -m pytest -q`. Offline tests use the FakeLLM fixture
+in `tests/conftest.py`.
+
+**2. Decision-support only — hard scope boundary.** Never add order execution,
+broker/exchange/wallet connectivity, or automation that acts on a memo without
+a human in the loop. Read-only market data and research are fine.
+
+**3. Environment quirks (DBAG work laptop).** Group policy blocks native
+binaries in user-writable dirs — invoke tools as
+`.venv/Scripts/python.exe -m <tool>` (e.g. black works, ruff's binary does
+not). `jq` is not installed.
+
+## Claude Code tooling in this repo
+
+- **`CLAUDE.md`** imports this file (`@AGENTS.md`) so it loads into Claude
+  Code's context every session — keep this file the single source of truth.
+- **Project subagents** (`.claude/agents/`):
+  - `provenance-auditor` — checks changes keep datapoint tagging, memo source
+    citations, trust order, price cross-checks.
+  - `scope-compliance-guard` — enforces the decision-support-only boundary.
+  - `llm-cost-auditor` — reviews diffs for token-spend regressions (prompt
+    bloat, fan-out growth, budget bypasses).
+  - `web-ui-tester` — browser-level smoke test of the FastAPI UI via Playwright.
+  - Plus generic copies for teammates: `python-reviewer`, `fastapi-reviewer`,
+    `security-reviewer`, `silent-failure-hunter`.
+- **Skills** (`.claude/skills/`): `run-offline-tests` (test-safety rules),
+  `add-agent-role` (checklist for adding a roster role).
+- **Hooks** (`.claude/settings.json`): edits to `.env*` are blocked
+  (except `.env.example`); edited `.py` files are auto-formatted with black.
+- **MCP servers** — the same two servers are configured for both harnesses:
+  - `.mcp.json` (repo root, **Claude Code** format, `mcpServers` key): `context7`
+    (HTTP, live library docs), `playwright` (npx stdio, browser automation). A
+    top-level `_comment` key documents what each is for (JSON has no comments;
+    Claude Code only reads `mcpServers`, so the key is ignored at load time).
+  - `.vscode/mcp.json` (**VS Code Copilot** format, `servers` key): same two
+    servers. Copilot does **not** read `.mcp.json`, so this file is required to
+    expose the servers in Copilot Chat's Agent mode. The two files are separate —
+    edit both to keep the harnesses in sync.

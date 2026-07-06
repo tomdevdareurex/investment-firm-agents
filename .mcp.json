@@ -1,0 +1,18 @@
+{
+  "_comment": "context7 = live library/framework docs lookup (FastAPI, Pydantic v2, databricks-sdk, yfinance). playwright = browser automation to verify the web UI (run page, market charts). Claude Code only reads 'mcpServers'; this key is ignored.",
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ],
+      "env": {}
+    }
+  }
+}

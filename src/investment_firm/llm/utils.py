@@ -23,9 +23,23 @@ def is_error(resp: object) -> bool:
         return True  # non-dict is always treated as an error
     if resp.get("type") == "error":  # Anthropic style
         return True
-    if isinstance(resp.get("error"), dict):  # OpenAI style
+    if resp.get("error"):  # OpenAI style (dict) or gateway string error
         return True
     return False
+
+
+def is_completion_error(resp: object) -> bool:
+    """True if ``resp`` cannot be a valid chat completion.
+
+    Stricter than :func:`is_error`: also flags dicts that carry NO completion
+    payload at all (neither OpenAI ``choices`` nor Anthropic ``content``), such
+    as gateway auth/quota bodies like ``{"detail": ...}`` or ``{"message": ...}``.
+    Only use on ``/chat/completions`` responses — other endpoints (models,
+    token usage) legitimately lack those keys.
+    """
+    if is_error(resp):
+        return True
+    return "choices" not in resp and "content" not in resp  # type: ignore[operator]
 
 
 def get_error_message(resp: object) -> Optional[str]:
@@ -36,12 +50,20 @@ def get_error_message(resp: object) -> Optional[str]:
     """
     if not isinstance(resp, dict):
         return f"unexpected response shape: {type(resp).__name__}"
-    if not is_error(resp):
-        return None
-    err = resp.get("error", {})
-    if isinstance(err, dict):
-        return err.get("message") or err.get("type") or str(err)
-    return str(err)
+    if is_error(resp):
+        err = resp.get("error")
+        if isinstance(err, dict):
+            return err.get("message") or err.get("type") or str(err)
+        if err:
+            return str(err)
+        return str(resp.get("message") or resp)
+    if is_completion_error(resp):
+        for key in ("detail", "message"):
+            value = resp.get(key)
+            if value:
+                return value if isinstance(value, str) else str(value)
+        return "no completion payload; keys: " + ", ".join(sorted(resp.keys()))
+    return None
 
 
 def extract_text(resp: object, strict: bool = True) -> str:
@@ -147,6 +169,77 @@ def extract_tool_calls(resp: dict) -> list:
         return normalized
 
     return []
+
+
+def extract_citations(resp: object) -> list:
+    """Return real web-search source citations as ``[{"url", "title", "origin"}, ...]``.
+
+    Handles both response shapes on this gateway (confirmed live 2026-07-02):
+
+    - OpenAI shape (Gemini grounding): ``choices[0].message.annotations[]`` entries with
+      ``type == "url_citation"`` carrying ``url_citation: {url, title}``.
+      Tagged ``origin="web:gemini"``.
+    - Anthropic shape (Claude native web search): top-level ``content[]`` blocks of
+      ``type == "web_search_tool_result"`` (inner ``content[]`` items of
+      ``type == "web_search_result"`` with ``url``/``title``) plus ``citations`` lists
+      attached to ``text`` blocks. Tagged ``origin="web:claude"``.
+
+    Deduplicated by URL, order preserved. Non-dict responses return ``[]``.
+    """
+    if not isinstance(resp, dict):
+        return []
+
+    out: list = []
+    seen: set = set()
+
+    def _add(url: object, title: object, origin: str) -> None:
+        if not isinstance(url, str) or not url or url in seen:
+            return
+        seen.add(url)
+        out.append({
+            "url": url,
+            "title": title if isinstance(title, str) else "",
+            "origin": origin,
+        })
+
+    # OpenAI shape (Gemini grounding annotations)
+    choices = resp.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") or {}
+        annotations = message.get("annotations")
+        if isinstance(annotations, list):
+            for ann in annotations:
+                if not isinstance(ann, dict) or ann.get("type") != "url_citation":
+                    continue
+                cite = ann.get("url_citation")
+                if isinstance(cite, dict):
+                    _add(cite.get("url"), cite.get("title"), "web:gemini")
+
+    # Anthropic shape (Claude web_search_tool_result blocks + text-block citations)
+    content = resp.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "web_search_tool_result":
+                inner = block.get("content")
+                if isinstance(inner, list):
+                    for item in inner:
+                        if isinstance(item, dict) and item.get("type") == "web_search_result":
+                            _add(item.get("url"), item.get("title"), "web:claude")
+            elif block.get("type") == "text":
+                citations = block.get("citations")
+                if isinstance(citations, list):
+                    for cite in citations:
+                        if isinstance(cite, dict):
+                            _add(cite.get("url"), cite.get("title"), "web:claude")
+
+    return out
+
+
+def has_web_evidence(resp: object) -> bool:
+    """True if the response carries at least one real web-search citation."""
+    return bool(extract_citations(resp))
 
 
 def assistant_message(resp: dict) -> Optional[dict]:

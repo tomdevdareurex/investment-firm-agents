@@ -13,7 +13,26 @@
       "Bash(.venv/Scripts/python.exe -m pytest -q -v tests/test_tools_format.py tests/test_core_offline.py::TestAgentResilience tests/test_core_offline.py::TestOrchestratorWebSearch tests/test_core_offline.py::TestRunsWarnings)",
       "Bash(\".venv/Scripts/python.exe\" -m pytest -q)",
       "Bash(.venv/Scripts/python.exe *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(sed -n 100,135p AGENTS.md)",
+      "Bash(sed -n 145,180p docs/ARCHITECTURE.md)",
+      "Bash(taskkill //F //PID 108552)",
+      "Bash(ps -W)",
+      "Bash(awk '$1==108552 || $4==108552')",
+      "Bash(taskkill //F //PID 43016)",
+      "Read(//c/Users/wn686/OneDrive - Deutsche Börse AG/Desktop/REPOs/dbx-llm/**)",
+      "Read(//c/Users/wn686/OneDrive - Deutsche Börse AG/Desktop/REPOs/dbx-llm/dbx_llm/**)",
+      "Bash(\".venv/Scripts/python.exe\" -c \"import databricks.sdk; print\\('sdk ok', databricks.sdk.version.__version__ if hasattr\\(databricks.sdk,'version'\\) else ''\\)\")",
+      "Bash(databricks auth *)",
+      "Bash(IFA_LLM_BACKEND=databricks \".venv/Scripts/python.exe\" -m investment_firm.interfaces.cli --simple --profile budget \"Is EUR investment-grade credit attractive versus Bunds right now?\")",
+      "Bash(.venv/Scripts/ruff.exe --version)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(claude mcp *)",
+      "Bash(command -v npx)",
+      "WebSearch",
+      "WebFetch(domain:docs.openbb.co)",
+      "WebFetch(domain:github.com)",
+      "Bash(grep -n \"tools/datasources.py\\\\|test_web_market\\\\|databricks\\\\` \\(second backend\\\\|Extras:\\\\|risk.py\" AGENTS.md)"
     ]
   }
 }

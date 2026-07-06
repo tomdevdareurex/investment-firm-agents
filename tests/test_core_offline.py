@@ -97,6 +97,11 @@ class TestAgentParsing:
         assert view.conviction == 2
         assert "bullish overall" in view.rationale
 
+    def test_plain_text_fallback_leaves_memory_breadcrumb(self):
+        agent = self._agent()
+        agent._parse("I think it is bullish overall.")
+        assert any("unparseable model output" in note for note in agent.memory.notes)
+
     def test_invalid_stance_normalised(self):
         data = json.dumps({"stance": "VERY_BULLISH", "conviction": 3, "rationale": "x"})
         view = self._agent()._parse(data)
@@ -526,6 +531,27 @@ class TestAgentResilience:
 
         llm.assert_call_count(1)
         assert any(r.startswith("API error") for r in view.key_risks)
+
+    def test_detail_only_gateway_body_takes_api_error_path(self, fake_llm):
+        """Gateway body like {"detail": ...} (no choices/content) must be treated
+        as an API error, NOT silently parsed as empty text → '(no parseable response)'."""
+        llm = fake_llm([{"detail": "Not authenticated"}])
+        agent = Agent(_spec(), tools=None, max_steps=4)
+        view = agent.run("Q?")
+
+        llm.assert_call_count(1)
+        assert any(r.startswith("API error") for r in view.key_risks)
+        assert any("Not authenticated" in r for r in view.key_risks)
+        assert all("did not return structured JSON" not in r for r in view.key_risks)
+
+    def test_string_error_gateway_body_takes_api_error_path(self, fake_llm):
+        llm = fake_llm([{"error": "quota exceeded"}])
+        agent = Agent(_spec(), tools=None, max_steps=4)
+        view = agent.run("Q?")
+
+        llm.assert_call_count(1)
+        assert any(r.startswith("API error") for r in view.key_risks)
+        assert any("quota exceeded" in r for r in view.key_risks)
 
     def test_max_steps_exhausted_triggers_finalization(self, fake_llm):
         """max_steps exhausted while model still tool-calling → one finalization call."""

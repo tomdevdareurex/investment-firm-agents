@@ -25,6 +25,7 @@ htmlcov/
 out/
 runs/
 *.memo.md
+.cache/
 
 # Jupyter
 .ipynb_checkpoints/

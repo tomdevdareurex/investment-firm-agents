@@ -77,6 +77,37 @@ function textBlock(text, cls) {
   return p;
 }
 
+// Safe link: anchor only for http(s) URLs, plain span otherwise. Never innerHTML.
+function linkNode(url, label) {
+  const text = label || url;
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = text;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    return a;
+  }
+  return el('span', '', text);
+}
+
+// Render a source string, linkifying any embedded http(s) URL.
+function sourceItemNode(text) {
+  const li = document.createElement('li');
+  const match = /https?:\/\/[^\s"'<>)\]]+/.exec(String(text));
+  if (!match) {
+    li.textContent = text;
+    return li;
+  }
+  const url = match[0];
+  const before = String(text).slice(0, match.index);
+  const after = String(text).slice(match.index + url.length);
+  if (before) li.appendChild(document.createTextNode(before));
+  li.appendChild(linkNode(url, url));
+  if (after) li.appendChild(document.createTextNode(after));
+  return li;
+}
+
 function escHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
@@ -118,6 +149,49 @@ async function loadProfiles() {
     });
   } catch (_err) {
     select.innerHTML = '<option value="">error loading profiles</option>';
+  }
+}
+
+// ── LLM backend switch ───────────────────────────────────────────────────
+
+function updateBackendNote(data) {
+  const note = document.getElementById('backend-note');
+  if (!note) return;
+  // All content via textContent — never innerHTML.
+  note.textContent = (data && data.note) ? data.note : '';
+}
+
+async function loadBackend() {
+  const select = document.getElementById('backend');
+  if (!select) return;
+  try {
+    const data = await fetchJson('/api/backend');
+    select.innerHTML = '';
+    (data.available || []).forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === data.backend) opt.selected = true;
+      select.appendChild(opt);
+    });
+    updateBackendNote(data);
+  } catch (_err) {
+    select.innerHTML = '<option value="">error loading backends</option>';
+  }
+}
+
+async function switchBackend(ev) {
+  const select = ev.target;
+  const note = document.getElementById('backend-note');
+  try {
+    const data = await fetchJson('/api/backend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend: select.value }),
+    });
+    updateBackendNote(data);
+  } catch (err) {
+    if (note) note.textContent = `Backend switch failed: ${err.message}`;
   }
 }
 
@@ -260,6 +334,11 @@ function renderReasoningTab(result) {
     header.appendChild(stanceBadge(view.stance));
     const convSpan = el('span', 'conviction-badge', `Conviction ${view.conviction}/5`);
     header.appendChild(convSpan);
+    if (view.grounded === false) {
+      const badge = el('span', 'badge badge--avoid', 'UNGROUNDED');
+      badge.title = 'No successful tool call or web citation backed this view';
+      header.appendChild(badge);
+    }
     card.appendChild(header);
 
     // Model
@@ -290,8 +369,20 @@ function renderReasoningTab(result) {
       const ul = document.createElement('ul');
       ul.className = 'analyst-list analyst-list--evidence';
       view.evidence.forEach((e) => {
+        ul.appendChild(sourceItemNode(e));
+      });
+      card.appendChild(ul);
+    }
+
+    // Web sources (real search citations captured this run)
+    if (view.citations && view.citations.length > 0) {
+      card.appendChild(el('h4', 'analyst-section-title', 'Web Sources'));
+      const ul = document.createElement('ul');
+      ul.className = 'analyst-list analyst-list--evidence';
+      view.citations.forEach((c) => {
         const li = document.createElement('li');
-        li.textContent = e;
+        li.appendChild(linkNode(c.url, c.title || c.url));
+        if (c.origin) li.appendChild(document.createTextNode(` (${c.origin})`));
         ul.appendChild(li);
       });
       card.appendChild(ul);
@@ -299,6 +390,33 @@ function renderReasoningTab(result) {
 
     panel.appendChild(card);
   });
+}
+
+function renderDebateTab(result) {
+  const panel = document.getElementById('tab-debate');
+  panel.textContent = '';
+
+  const debate = result.debate || [];
+  if (debate.length === 0) {
+    panel.appendChild(
+      el('p', 'loading', 'No debate (simple mode or max_debate_rounds is 0).')
+    );
+    return;
+  }
+
+  panel.appendChild(el('h3', 'section-title', 'Bull / Bear Debate'));
+  debate.forEach((turn) => {
+    const side = (turn.speaker || '').toLowerCase();
+    const card = el('div', `debate-turn debate-turn--${side || 'other'}`);
+    card.appendChild(el('span', 'debate-speaker', turn.speaker || '?'));
+    card.appendChild(textBlock(turn.text || '', 'debate-text'));
+    panel.appendChild(card);
+  });
+
+  if (result.debate_summary) {
+    panel.appendChild(el('h3', 'section-title', 'Debate Verdict'));
+    panel.appendChild(textBlock(result.debate_summary, 'debate-verdict'));
+  }
 }
 
 function renderBriefingTab(result) {
@@ -316,19 +434,32 @@ function renderSourcesTab(result) {
   const panel = document.getElementById('tab-sources');
   panel.textContent = '';
   const sources = result.sources || [];
-  if (sources.length === 0) {
+  const webSources = result.web_sources || [];
+  if (sources.length === 0 && webSources.length === 0) {
     panel.appendChild(el('p', 'loading', 'No sources recorded.'));
     return;
   }
-  panel.appendChild(el('h3', 'section-title', `Sources (${sources.length})`));
-  const ul = document.createElement('ul');
-  ul.className = 'sources-list';
-  sources.forEach((s) => {
-    const li = document.createElement('li');
-    li.textContent = s;
-    ul.appendChild(li);
-  });
-  panel.appendChild(ul);
+  if (webSources.length > 0) {
+    panel.appendChild(el('h3', 'section-title', `Web Sources (${webSources.length})`));
+    const wul = document.createElement('ul');
+    wul.className = 'sources-list';
+    webSources.forEach((s) => {
+      const li = document.createElement('li');
+      li.appendChild(linkNode(s.url, s.title || s.url));
+      if (s.origin) li.appendChild(document.createTextNode(` (${s.origin})`));
+      wul.appendChild(li);
+    });
+    panel.appendChild(wul);
+  }
+  if (sources.length > 0) {
+    panel.appendChild(el('h3', 'section-title', `Sources (${sources.length})`));
+    const ul = document.createElement('ul');
+    ul.className = 'sources-list';
+    sources.forEach((s) => {
+      ul.appendChild(sourceItemNode(s));
+    });
+    panel.appendChild(ul);
+  }
 }
 
 function renderCostsTab(result) {
@@ -359,6 +490,7 @@ function renderCostsTab(result) {
 function renderResults(result) {
   renderMemoTab(result);
   renderReasoningTab(result);
+  renderDebateTab(result);
   renderBriefingTab(result);
   renderSourcesTab(result);
   renderCostsTab(result);
@@ -490,8 +622,12 @@ async function startRun() {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadHealth();
+  loadBackend();
   loadProfiles();
   initTabs();
+
+  const backendSelect = document.getElementById('backend');
+  if (backendSelect) backendSelect.addEventListener('change', switchBackend);
 
   const form = document.getElementById('preview-form');
   if (form) form.addEventListener('submit', runPreview);

@@ -38,6 +38,8 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[data]"   # data tools (yfinance etc.)
 .venv\Scripts\python.exe -m pip install -e ".[api]"    # web UI (FastAPI + uvicorn)
 .venv\Scripts\python.exe -m pip install -e ".[dev]"    # tests + notebooks
+.venv\Scripts\python.exe -m pip install -e ".[databricks]"  # optional 2nd LLM backend
+.venv\Scripts\python.exe -m pip install -e ".[openbb]"      # optional OpenBB tools (yield curve, options, CPI; AGPLv3)
 
 copy .env.example .env   # then paste your AI Playground key
 ```
@@ -73,6 +75,33 @@ globally with `IFA_PROFILE=budget` in `.env`.
 
 ---
 
+## LLM backend switch (Playground ↔ Databricks)
+
+Two interchangeable backends serve every LLM call; core code never knows which
+one is active. Useful when the Playground monthly token quota is exhausted.
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[databricks]"
+databricks auth login --host https://<your-workspace-host>   # OAuth / CLI profile, no PATs
+
+$env:IFA_LLM_BACKEND = "databricks"    # default: playground
+investment-firm "Is AAPL fairly valued?" --simple
+```
+
+Or switch at runtime in the web UI ("LLM backend" dropdown, backed by
+`GET/POST /api/backend`).
+
+- **Model names stay logical** (Playground-style) in `firm.yaml`; on Databricks
+  they map mechanically (`claude-4.6-opus` → `databricks-claude-opus-4-6`,
+  `gpt-5.4` → `databricks-gpt-5-4`), validated against the live endpoint list.
+  Overrides: `IFA_DBX_MODEL_MAP` (JSON) and `IFA_DBX_DEFAULT_MODEL` (fallback).
+- **No web search on Databricks** — agents ground via the data tools only; the
+  grounding gate and citation rules are unchanged (no fake web sources).
+- Function tools work (OpenAI format, verified live); costs are tracked as raw
+  tokens with a unit-less weight.
+
+---
+
 ## Web UI
 
 ```powershell
@@ -103,6 +132,26 @@ Runs respect `--profile` and `--simple` (passed via the UI controls) and the
 `IFA_CALL_PAUSE` env variable slows inter-call pacing to stay under
 tokens-per-minute limits.
 
+### Market data cache
+
+The web API now exposes chart-ready Yahoo Finance history:
+
+```text
+GET /api/market/price-history?ticker=AAPL&period=1y&interval=1d
+```
+
+Responses include OHLC and volume arrays suitable for charting, plus a `cache`
+metadata block showing whether saved fetched data was used. The local SQLite
+cache defaults to `.cache/investment_firm/market_data.sqlite` and is ignored by
+git. Override it with `INVESTMENT_FIRM_MARKET_CACHE` for tests or a custom data
+directory. Use `force_refresh=true` to bypass saved data, or `cache=false` to
+disable reads/writes for one request.
+
+This cache is for research UX, reproducibility, and avoiding repeated provider
+calls. It must not be used for execution. Any separate execution system outside
+this app would need independent real-time market-data validation, compliance
+controls, and human approval.
+
 ---
 
 ## CLI (M0 utility commands)
@@ -128,7 +177,13 @@ tokens-per-minute limits.
 
 The `FakeLLM` fixture in `tests/conftest.py` monkeypatches `client.chat` with
 scriptable canned responses so the full agent/orchestrator stack is testable offline.
-204 offline tests pass; the live suite is opt-in.
+241 offline tests pass; the live suite is opt-in.
+
+Memo trust: analyst views carry a `grounded` flag (≥1 successful tool call or
+real web citation required — otherwise an "UNVERIFIED" key risk is forced),
+failed tools surface as "DATA GAP" risks, and real web-search source URLs
+(Claude + Gemini citations) appear as clickable links in the web UI's Sources
+tab and per-analyst cards.
 
 ---
 

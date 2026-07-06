@@ -7,6 +7,7 @@ several turns before emitting its final structured view. The loop is bounded by
 :class:`ScratchMemory` of what it observed. When no tools are provided (or the model
 returns no tool calls), it behaves like a normal single answer.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -19,16 +20,29 @@ from ..llm import client
 from ..llm.costs import RunTracker
 from ..llm.utils import (
     assistant_message,
+    extract_citations,
     extract_text,
     extract_tool_calls,
     extract_usage,
-    is_error,
+    is_completion_error,
     get_error_message,
 )
 from .memory import ScratchMemory
 from .roster import RoleSpec
-from .schemas import AnalystView
+from .schemas import AnalystView, Source
 from .tools.base import ToolRegistry
+
+# Max age (days) for a tool result's as_of date before it is flagged stale.
+_FRESHNESS_WINDOWS_DAYS = {
+    "get_prices": 3,
+    "compute_risk_metrics": 3,
+    "get_ecb_rate": 45,
+    "get_worldbank_indicator": 400,
+    "get_company_filing": 400,
+    "get_yield_curve": 7,
+    "get_options_summary": 3,
+    "get_cpi": 90,
+}
 
 _SYSTEM_TEMPLATE = (
     "You are the {role} at a buy-side investment firm. Your mandate: {mandate}\n"
@@ -84,13 +98,63 @@ def _salvage_fields(text: str) -> Optional[dict]:
     rationale = re.search(r'"rationale"\s*:\s*"([^"]*)', text)  # may be truncated
     if not (stance or rationale):
         return None
+    # Capture only inside the key_risks [...] segment, so risks from other fields
+    # (rationale, evidence) never bleed into the list.
+    risks_block = re.search(r'"key_risks"\s*:\s*\[(.*?)\]', text, re.S)
+    key_risks = re.findall(r'"([^"]+)"', risks_block.group(1)) if risks_block else []
     return {
         "stance": stance.group(1) if stance else "NEUTRAL",
         "conviction": int(conviction.group(1)) if conviction else 3,
         "rationale": rationale.group(1).strip() if rationale else "",
-        "key_risks": re.findall(r'"([^"]+)"', text[text.find("key_risks"):]) if "key_risks" in text else [],
+        "key_risks": key_risks,
         "evidence": [],
     }
+
+
+_STRUCTURAL_FRAGMENT = re.compile(r'^[\s\[\]{}:,"\']*$')
+
+
+def _clean_str_list(value: object) -> List[str]:
+    """Normalise a model-provided list field into a clean ``list[str]``.
+
+    Models sometimes return a stringified JSON array (which naive ``list()``
+    iteration would split char-by-char) or nest dicts inside the list.
+    """
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            value = parsed
+        else:
+            text = value.strip()
+            return [text] if text and not _STRUCTURAL_FRAGMENT.match(text) else []
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text and not _STRUCTURAL_FRAGMENT.match(text):
+            out.append(text)
+    return out
+
+
+def _staleness_note(name: str, result: dict) -> Optional[str]:
+    """Return a 'stale as_of=<date>' note when a tool result is older than allowed."""
+    window = _FRESHNESS_WINDOWS_DAYS.get(name)
+    as_of = result.get("as_of")
+    if window is None or not isinstance(as_of, str):
+        return None
+    try:
+        as_of_date = datetime.date.fromisoformat(as_of[:10])
+    except ValueError:
+        return None
+    if (datetime.date.today() - as_of_date).days > window:
+        return f"stale as_of={as_of_date.isoformat()}"
+    return None
 
 
 class Agent:
@@ -138,6 +202,9 @@ class Agent:
         tool_schemas = self.tools.schemas() if self.tools and len(self.tools) else None
 
         final_text = ""
+        grounded_calls = 0
+        data_gaps: List[str] = []
+        citations: List[dict] = []
         for _ in range(self.max_steps):
             # Budget guard: stop spending if the run budget would be exceeded.
             if tracker is not None and tracker.would_exceed(self.max_tokens):
@@ -161,7 +228,7 @@ class Agent:
                 tracker.record(self.spec.name, self.spec.model, inp, out, elapsed)
 
             # Resilience: handle error responses
-            if is_error(resp):
+            if is_completion_error(resp):
                 err_msg = get_error_message(resp) or "unknown error"
                 self.memory.remember(f"API error: {err_msg}")
                 if tool_schemas:
@@ -178,8 +245,11 @@ class Agent:
                     elapsed2 = time.perf_counter() - start2
                     if tracker is not None:
                         inp2, out2, _ = extract_usage(resp2)
-                        tracker.record(self.spec.name, self.spec.model, inp2, out2, elapsed2)
-                    if not is_error(resp2):
+                        tracker.record(
+                            self.spec.name, self.spec.model, inp2, out2, elapsed2
+                        )
+                    if not is_completion_error(resp2):
+                        citations.extend(extract_citations(resp2))
                         final_text = extract_text(resp2, strict=False)
                         break
                     err_msg = get_error_message(resp2) or err_msg
@@ -193,16 +263,40 @@ class Agent:
                     key_risks=[f"API error: {err_msg}"],
                 )
 
+            citations.extend(extract_citations(resp))
+
             calls = extract_tool_calls(resp)
             if calls and self.tools is not None:
                 # Append the assistant's tool-call turn, then each tool result.
-                messages.append(assistant_message(resp) or {"role": "assistant", "content": ""})
+                messages.append(
+                    assistant_message(resp) or {"role": "assistant", "content": ""}
+                )
                 for call in calls:
                     fn = call.get("function", {}) if isinstance(call, dict) else {}
                     name = fn.get("name", "")
                     args = fn.get("arguments", "{}")
                     result = self.tools.dispatch(name, args)
-                    self.memory.remember(f"{name}({args}) -> {result[:200]}")
+                    note = f"{name}({args}) -> {result[:200]}"
+                    try:
+                        parsed = json.loads(result)
+                    except (ValueError, TypeError):
+                        parsed = None
+                    is_gap = parsed is None or (
+                        isinstance(parsed, dict) and "error" in parsed
+                    )
+                    if is_gap:
+                        err = ""
+                        if isinstance(parsed, dict):
+                            err = str(parsed.get("error", ""))[:120]
+                        data_gaps.append(name)
+                        note = f"DATA GAP: {name}: {err or 'unparseable result'}"
+                    else:
+                        grounded_calls += 1
+                        if isinstance(parsed, dict):
+                            stale = _staleness_note(name, parsed)
+                            if stale:
+                                note += f" [{stale}]"
+                    self.memory.remember(note)
                     messages.append(
                         {
                             "role": "tool",
@@ -217,10 +311,12 @@ class Agent:
 
         # Finalization: if max_steps exhausted with model still tool-calling (empty text)
         if not final_text and tool_schemas:
-            messages.append({
-                "role": "user",
-                "content": "Stop calling tools. Answer now with ONLY the JSON object.",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Stop calling tools. Answer now with ONLY the JSON object.",
+                }
+            )
             start_fin = time.perf_counter()
             fin_resp = client.chat(
                 self.spec.model,
@@ -233,11 +329,46 @@ class Agent:
             elapsed_fin = time.perf_counter() - start_fin
             if tracker is not None:
                 inp_fin, out_fin, _ = extract_usage(fin_resp)
-                tracker.record(self.spec.name, self.spec.model, inp_fin, out_fin, elapsed_fin)
-            if not is_error(fin_resp):
+                tracker.record(
+                    self.spec.name, self.spec.model, inp_fin, out_fin, elapsed_fin
+                )
+            if not is_completion_error(fin_resp):
+                citations.extend(extract_citations(fin_resp))
                 final_text = extract_text(fin_resp, strict=False)
 
-        return self._parse(final_text)
+        view = self._parse(final_text)
+        return self._apply_grounding(view, grounded_calls, data_gaps, citations)
+
+    def _apply_grounding(
+        self,
+        view: AnalystView,
+        grounded_calls: int,
+        data_gaps: List[str],
+        citations: List[dict],
+    ) -> AnalystView:
+        """Enforce the freshness gate: flag ungrounded views and tool data gaps."""
+        seen: set = set()
+        sources: List[Source] = []
+        for cite in citations:
+            url = cite.get("url", "")
+            if url and url not in seen:
+                seen.add(url)
+                sources.append(Source(**cite))
+        view.citations = sources
+        view.grounded = grounded_calls > 0 or bool(sources)
+        extra: List[str] = []
+        if not view.grounded:
+            extra.append(
+                "UNVERIFIED: no live data obtained — figures are training-data estimates"
+            )
+        for name in data_gaps:
+            extra.append(
+                f"DATA GAP: {name} failed — dependent figures inferred, not measured"
+            )
+        for risk in extra[:4]:
+            if risk not in view.key_risks:
+                view.key_risks.append(risk)
+        return view
 
     def _to_view(self, data: dict) -> AnalystView:
         stance = str(data.get("stance", "NEUTRAL")).upper()
@@ -254,8 +385,8 @@ class Agent:
             stance=stance,
             conviction=conviction,
             rationale=str(data.get("rationale", "")).strip(),
-            key_risks=[str(r) for r in data.get("key_risks", []) or []],
-            evidence=[str(e) for e in data.get("evidence", []) or []],
+            key_risks=_clean_str_list(data.get("key_risks", [])),
+            evidence=_clean_str_list(data.get("evidence", [])),
         )
 
     def _parse(self, text: str) -> AnalystView:
@@ -271,6 +402,7 @@ class Agent:
         if salvaged is not None:
             return self._to_view(salvaged)
         # 3) Total fallback: keep the run alive with the raw text as rationale.
+        self.memory.remember(f"unparseable model output: {text[:200]!r}")
         return AnalystView(
             role=self.spec.name,
             model=self.spec.model,

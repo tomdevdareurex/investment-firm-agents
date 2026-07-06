@@ -99,6 +99,11 @@ def timeout() -> float:
         return 60.0
 
 
+def llm_backend() -> str:
+    """Return the configured LLM backend name (``IFA_LLM_BACKEND``, default playground)."""
+    return (os.getenv("IFA_LLM_BACKEND", "playground").strip() or "playground").lower()
+
+
 def profile() -> str:
     """Return the default firm profile name (budget | balanced | premium)."""
     return os.getenv("IFA_PROFILE", "balanced").strip() or "balanced"

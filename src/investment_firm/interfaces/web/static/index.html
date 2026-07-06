@@ -35,6 +35,13 @@
 
         <div class="field-row">
           <div class="field">
+            <label for="backend">LLM backend</label>
+            <select id="backend" name="backend">
+              <option value="">loading…</option>
+            </select>
+          </div>
+
+          <div class="field">
             <label for="profile">Profile</label>
             <select id="profile" name="profile">
               <option value="">loading…</option>
@@ -49,6 +56,8 @@
           </div>
         </div>
 
+        <div id="backend-note" class="backend-note" role="status" aria-live="polite"></div>
+
         <div class="actions">
           <button type="submit" id="btn-preview" class="btn btn--primary">
             Preview (free)
@@ -62,6 +71,108 @@
       <div id="preview-result" role="region" aria-live="polite" aria-label="Preview result"></div>
     </section>
 
+    <!-- Market charts panel — decision-support research, no tokens -->
+    <section id="charts-panel" class="card" aria-labelledby="charts-heading">
+      <div class="charts-header">
+        <h2 id="charts-heading">Market Charts</h2>
+        <span class="badge badge--research">Research only — not trade signals</span>
+      </div>
+      <p class="subtitle">
+        Price history via the local market-data endpoint (yfinance, cached) —
+        <strong>free, no tokens spent</strong>.
+      </p>
+
+      <form id="chart-form" autocomplete="off">
+        <div class="field-row chart-controls">
+          <div class="field field--ticker">
+            <label for="chart-ticker">Ticker</label>
+            <input type="text" id="chart-ticker" name="ticker" value="AAPL"
+                   maxlength="24" pattern="[A-Za-z0-9.^=_-]+" required
+                   placeholder="e.g. AAPL, ^GSPC" />
+          </div>
+          <div class="field">
+            <label for="chart-period">Period</label>
+            <select id="chart-period" name="period">
+              <option value="1d">1d</option>
+              <option value="5d">5d</option>
+              <option value="1mo">1mo</option>
+              <option value="3mo">3mo</option>
+              <option value="6mo">6mo</option>
+              <option value="1y" selected>1y</option>
+              <option value="2y">2y</option>
+              <option value="5y">5y</option>
+              <option value="10y">10y</option>
+              <option value="ytd">ytd</option>
+              <option value="max">max</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="chart-interval">Interval</label>
+            <select id="chart-interval" name="interval">
+              <option value="1d" selected>1d</option>
+              <option value="1wk">1wk</option>
+              <option value="1mo">1mo</option>
+            </select>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-force-refresh" />
+              <span>Force refresh</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-sma20" checked />
+              <span>SMA 20</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-sma50" />
+              <span>SMA 50</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-ema10" />
+              <span>EMA 10</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-sma200" />
+              <span>SMA 200</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-boll" />
+              <span>Bollinger</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-rsi" />
+              <span>RSI</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chart-macd" />
+              <span>MACD</span>
+            </label>
+          </div>
+          <div class="actions chart-actions">
+            <button type="submit" id="btn-chart-load" class="btn btn--primary">Load chart</button>
+          </div>
+        </div>
+      </form>
+
+      <div id="chart-status" class="chart-status" role="status" aria-live="polite"></div>
+      <div id="chart-container" class="chart-container" aria-label="Price chart"></div>
+      <div id="chart-cache" class="chart-cache" aria-live="polite"></div>
+    </section>
+
     <!-- Results panel — hidden until a run completes -->
     <section id="results-panel" class="card results-card" aria-labelledby="results-heading" hidden>
       <div class="results-header">
@@ -72,6 +183,7 @@
       <nav class="tab-bar" role="tablist" aria-label="Result tabs">
         <button class="tab-btn tab-btn--active" role="tab" data-tab="memo"      aria-selected="true"  aria-controls="tab-memo">Memo</button>
         <button class="tab-btn"                 role="tab" data-tab="reasoning" aria-selected="false" aria-controls="tab-reasoning">Reasoning</button>
+        <button class="tab-btn"                 role="tab" data-tab="debate"    aria-selected="false" aria-controls="tab-debate">Debate</button>
         <button class="tab-btn"                 role="tab" data-tab="briefing"  aria-selected="false" aria-controls="tab-briefing">Briefing</button>
         <button class="tab-btn"                 role="tab" data-tab="sources"   aria-selected="false" aria-controls="tab-sources">Sources</button>
         <button class="tab-btn"                 role="tab" data-tab="costs"     aria-selected="false" aria-controls="tab-costs">Costs</button>
@@ -79,6 +191,7 @@
 
       <div id="tab-memo"      class="tab-panel tab-panel--active" role="tabpanel"></div>
       <div id="tab-reasoning" class="tab-panel"                   role="tabpanel" hidden></div>
+      <div id="tab-debate"    class="tab-panel"                   role="tabpanel" hidden></div>
       <div id="tab-briefing"  class="tab-panel"                   role="tabpanel" hidden></div>
       <div id="tab-sources"   class="tab-panel"                   role="tabpanel" hidden></div>
       <div id="tab-costs"     class="tab-panel"                   role="tabpanel" hidden></div>
@@ -90,5 +203,7 @@
   </footer>
 
   <script src="/static/app.js"></script>
+  <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+  <script src="/static/charts.js"></script>
 </body>
 </html>

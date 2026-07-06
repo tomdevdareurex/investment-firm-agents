@@ -9,6 +9,7 @@ GET  /api/runs/{run_id} Poll a run; when done includes full result envelope.
 The registry is a plain dict protected by a threading.Lock.
 Runs are daemon threads so they die when the server exits; no persistence.
 """
+
 from __future__ import annotations
 
 import threading
@@ -22,7 +23,7 @@ try:
 except ImportError as _exc:  # pragma: no cover
     raise RuntimeError(
         "FastAPI not installed. Run:\n"
-        "    .venv\\Scripts\\python.exe -m pip install -e \".[api]\""
+        '    .venv\\Scripts\\python.exe -m pip install -e ".[api]"'
     ) from _exc
 
 import investment_firm
@@ -56,6 +57,7 @@ def _utcnow() -> str:
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class RunRequest(BaseModel):
     question: str
     profile: Optional[str] = None
@@ -66,7 +68,10 @@ class RunRequest(BaseModel):
 # Background worker
 # ---------------------------------------------------------------------------
 
-def _run_worker(run_id: str, question: str, profile: Optional[str], simple: bool) -> None:
+
+def _run_worker(
+    run_id: str, question: str, profile: Optional[str], simple: bool
+) -> None:
     """Execute run_committee in a daemon thread and store the result."""
     with _lock:
         _registry[run_id]["status"] = "running"
@@ -85,6 +90,11 @@ def _run_worker(run_id: str, question: str, profile: Optional[str], simple: bool
             for risk in view.key_risks:
                 if risk.startswith("API error"):
                     warnings.append(f"{view.role}: API error — {risk}")
+            if not view.grounded:
+                warnings.append(
+                    f"{view.role}: ungrounded — no successful tool call or web "
+                    "citation backed this view."
+                )
         if tracker.token_budget > 0 and tracker.total_tokens >= tracker.token_budget:
             warnings.append(
                 f"Token budget reached or exceeded: "
@@ -120,10 +130,15 @@ def _run_worker(run_id: str, question: str, profile: Optional[str], simple: bool
                     "rationale": v.rationale,
                     "key_risks": v.key_risks,
                     "evidence": v.evidence,
+                    "grounded": v.grounded,
+                    "citations": [c.model_dump() for c in v.citations],
                 }
                 for v in memo.views
             ],
             "sources": memo.all_sources(),
+            "web_sources": [s.model_dump() for s in memo.web_sources],
+            "debate": [t.model_dump() for t in memo.debate],
+            "debate_summary": memo.debate_summary,
             "cost_summary": tracker.render_summary(),
             "call_records": call_records,
             "warnings": warnings,

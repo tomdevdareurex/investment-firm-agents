@@ -26,6 +26,7 @@ try:
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
+    from pydantic import BaseModel
 except ImportError as _exc:  # pragma: no cover
     raise RuntimeError(
         "FastAPI not installed. Run:\n"
@@ -47,6 +48,9 @@ from investment_firm.core.roster import (
     resolve_roles,
 )
 
+from investment_firm.llm import backends as _backends
+
+from investment_firm.interfaces.web.market import router as _market_router
 from investment_firm.interfaces.web.runs import router as _runs_router
 
 _STATIC = Path(__file__).parent / "static"
@@ -66,6 +70,9 @@ if _STATIC.exists():
 
 # Runs sub-router (POST /api/runs, GET /api/runs, GET /api/runs/{run_id})
 app.include_router(_runs_router)
+
+# Market-data sub-router (GET /api/market/price-history)
+app.include_router(_market_router)
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +144,44 @@ def health() -> Dict[str, Any]:
         "version": investment_firm.__version__,
         "disclaimer": investment_firm.DISCLAIMER,
     }
+
+
+class BackendRequest(BaseModel):
+    backend: str
+
+
+def _backend_payload(name: str) -> Dict[str, Any]:
+    caps = _backends.capabilities(name)
+    payload: Dict[str, Any] = {
+        "backend": name,
+        "label": caps.label,
+        "available": list(_backends.BACKENDS),
+        "capabilities": {
+            "web_search": caps.supports_web_search,
+            "tools": caps.supports_tools,
+        },
+    }
+    if not caps.supports_web_search:
+        payload["note"] = (
+            "No web search on this backend — analysts ground via data tools only."
+        )
+    return payload
+
+
+@app.get("/api/backend")
+def get_backend() -> Dict[str, Any]:
+    """Current LLM backend + capabilities — no tokens, no network."""
+    return _backend_payload(_backends.current_backend())
+
+
+@app.post("/api/backend")
+def set_backend(body: BackendRequest) -> Dict[str, Any]:
+    """Switch the active LLM backend for this server process (runtime override)."""
+    try:
+        name = _backends.set_backend(body.backend)
+    except _backends.BackendError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _backend_payload(name)
 
 
 @app.get("/api/profiles")

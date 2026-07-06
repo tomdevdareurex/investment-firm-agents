@@ -11,6 +11,7 @@ from investment_firm.llm.utils import (
     extract_tool_calls,
     assistant_message,
     is_error,
+    is_completion_error,
     get_error_message,
 )
 
@@ -97,6 +98,63 @@ def test_assistant_message_list_returns_none():
 def test_extract_usage_list_returns_zeros():
     assert extract_usage([]) == (0, 0, 0)
     assert extract_usage(None) == (0, 0, 0)
+
+
+# --- gateway error-shape hardening -----------------------------------------
+
+
+def test_is_error_detects_string_error_value():
+    assert is_error({"error": "quota exceeded"}) is True
+
+
+def test_is_error_still_detects_dict_error_value():
+    assert is_error({"error": {"message": "boom"}}) is True
+
+
+def test_is_error_false_for_valid_completion_shapes():
+    assert is_error({"choices": [{"message": {"content": "ok"}}]}) is False
+    assert is_error({"content": [{"type": "text", "text": "ok"}]}) is False
+
+
+def test_is_error_false_for_non_completion_endpoints():
+    # /ai/models and token-usage payloads must NOT be flagged by is_error
+    assert is_error({"data": [{"id": "gpt"}]}) is False
+    assert is_error({"used": 5, "total": 10}) is False
+
+
+def test_is_completion_error_flags_detail_only_body():
+    assert is_completion_error({"detail": "Not authenticated"}) is True
+
+
+def test_is_completion_error_flags_message_only_body():
+    assert is_completion_error({"message": "rate limited"}) is True
+
+
+def test_is_completion_error_false_for_valid_completions():
+    assert is_completion_error({"choices": [{"message": {"content": "ok"}}]}) is False
+    assert is_completion_error({"content": [{"type": "text", "text": "ok"}]}) is False
+
+
+def test_get_error_message_string_error():
+    assert get_error_message({"error": "quota exceeded"}) == "quota exceeded"
+
+
+def test_get_error_message_detail_only():
+    assert get_error_message({"detail": "Not authenticated"}) == "Not authenticated"
+
+
+def test_get_error_message_message_only():
+    assert get_error_message({"message": "rate limited"}) == "rate limited"
+
+
+def test_get_error_message_no_payload_lists_keys():
+    msg = get_error_message({"foo": 1, "bar": 2})
+    assert "no completion payload" in msg
+    assert "bar" in msg and "foo" in msg
+
+
+def test_get_error_message_none_for_valid_completion():
+    assert get_error_message({"choices": [{"message": {"content": "ok"}}]}) is None
 
 
 # --- chat payload construction (mocked transport) -------------------------

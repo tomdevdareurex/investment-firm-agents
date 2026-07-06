@@ -8,9 +8,17 @@ schema list / dispatches calls.
 Data-source tools live in :mod:`datasources`; they degrade gracefully when the optional
 ``.[data]`` providers are not installed.
 """
+
 from __future__ import annotations
 
 from .base import Tool, ToolError, ToolRegistry
 from .datasources import default_data_tools
+from .openbb_datasources import default_openbb_tools
 
-__all__ = ["Tool", "ToolError", "ToolRegistry", "default_data_tools"]
+__all__ = [
+    "Tool",
+    "ToolError",
+    "ToolRegistry",
+    "default_data_tools",
+    "default_openbb_tools",
+]

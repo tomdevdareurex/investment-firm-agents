@@ -3,6 +3,7 @@
 run_committee is monkeypatched with a fake that builds a real Memo + RunTracker
 from the actual schemas/costs classes so no LLM is ever called.
 """
+
 from __future__ import annotations
 
 import time
@@ -10,17 +11,24 @@ from typing import Tuple
 
 import pytest
 
-fastapi = pytest.importorskip("fastapi", reason="fastapi not installed (run: pip install -e '.[api]')")
+fastapi = pytest.importorskip(
+    "fastapi", reason="fastapi not installed (run: pip install -e '.[api]')"
+)
 from fastapi.testclient import TestClient  # noqa: E402
 
 import investment_firm  # noqa: E402
-from investment_firm.core.schemas import AnalystView, Memo  # noqa: E402
+from investment_firm.core.schemas import (
+    AnalystView,
+    DebateTurn,
+    Memo,
+    Source,
+)  # noqa: E402
 from investment_firm.llm.costs import RunTracker  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fake run_committee
 # ---------------------------------------------------------------------------
+
 
 def _make_memo(question: str = "Test question", profile: str = "balanced") -> Memo:
     views = [
@@ -32,6 +40,14 @@ def _make_memo(question: str = "Test question", profile: str = "balanced") -> Me
             rationale="Strong earnings growth outlook.",
             key_risks=["valuation risk"],
             evidence=["S&P 500 P/E: 22x"],
+            grounded=True,
+            citations=[
+                Source(
+                    url="https://example.com/report",
+                    title="Report",
+                    origin="web:claude",
+                )
+            ],
         ),
         AnalystView(
             role="credit_analyst",
@@ -51,6 +67,16 @@ def _make_memo(question: str = "Test question", profile: str = "balanced") -> Me
         views=views,
         briefing="GDP growing at 2.5%. CPI at 3.1%.",
         sources=["ECB: rate 4.25%"],
+        web_sources=[
+            Source(
+                url="https://example.com/report", title="Report", origin="web:claude"
+            )
+        ],
+        debate=[
+            DebateTurn(speaker="Bull", text="Growth justifies the multiple."),
+            DebateTurn(speaker="Bear", text="Valuation leaves no margin."),
+        ],
+        debate_summary="BULLISH: the bull case is better supported on earnings.",
         disclaimer=investment_firm.DISCLAIMER,
     )
 
@@ -62,7 +88,9 @@ def _make_tracker() -> RunTracker:
     return tracker
 
 
-def _fake_run_committee(question, *, profile=None, simple=False, tracker=None) -> Tuple[Memo, RunTracker]:
+def _fake_run_committee(
+    question, *, profile=None, simple=False, tracker=None
+) -> Tuple[Memo, RunTracker]:
     memo = _make_memo(question=question, profile=profile or "balanced")
     t = _make_tracker()
     return memo, t
@@ -76,6 +104,7 @@ def _fake_run_committee_error(question, *, profile=None, simple=False, tracker=N
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def client(monkeypatch):
     """TestClient with run_committee monkeypatched to the happy-path fake."""
@@ -85,9 +114,11 @@ def client(monkeypatch):
     )
     # Clear the registry between tests
     import investment_firm.interfaces.web.runs as runs_mod
+
     runs_mod._registry.clear()
 
     from investment_firm.interfaces.web.app import app
+
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
@@ -100,9 +131,11 @@ def error_client(monkeypatch):
         _fake_run_committee_error,
     )
     import investment_firm.interfaces.web.runs as runs_mod
+
     runs_mod._registry.clear()
 
     from investment_firm.interfaces.web.app import app
+
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
@@ -124,6 +157,7 @@ def _wait_for_done(client, run_id: str, timeout: float = 5.0) -> dict:
 # POST /api/runs — validation
 # ---------------------------------------------------------------------------
 
+
 class TestPostRunValidation:
     def test_empty_question_returns_400(self, client):
         resp = client.post("/api/runs", json={"question": ""})
@@ -135,7 +169,9 @@ class TestPostRunValidation:
         assert resp.status_code == 400
 
     def test_unknown_profile_returns_400(self, client):
-        resp = client.post("/api/runs", json={"question": "Test?", "profile": "nonexistent_xyz"})
+        resp = client.post(
+            "/api/runs", json={"question": "Test?", "profile": "nonexistent_xyz"}
+        )
         assert resp.status_code == 400
         data = resp.json()
         assert "detail" in data
@@ -143,13 +179,16 @@ class TestPostRunValidation:
         assert any(p in data["detail"] for p in ("budget", "balanced", "Available"))
 
     def test_missing_body_returns_422(self, client):
-        resp = client.post("/api/runs", content=b"", headers={"Content-Type": "application/json"})
+        resp = client.post(
+            "/api/runs", content=b"", headers={"Content-Type": "application/json"}
+        )
         assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
 # POST /api/runs — happy path
 # ---------------------------------------------------------------------------
+
 
 class TestPostRunHappy:
     def test_returns_202(self, client):
@@ -176,13 +215,16 @@ class TestPostRunHappy:
         assert resp.status_code == 202
 
     def test_valid_named_profile_accepted(self, client):
-        resp = client.post("/api/runs", json={"question": "Outlook?", "profile": "budget"})
+        resp = client.post(
+            "/api/runs", json={"question": "Outlook?", "profile": "budget"}
+        )
         assert resp.status_code == 202
 
 
 # ---------------------------------------------------------------------------
 # GET /api/runs/{id} — polling
 # ---------------------------------------------------------------------------
+
 
 class TestGetRunById:
     def test_unknown_id_returns_404(self, client):
@@ -226,6 +268,40 @@ class TestGetRunById:
         assert "sources" in data["result"]
         assert isinstance(data["result"]["sources"], list)
 
+    def test_done_result_has_web_sources_and_citations(self, client):
+        post = client.post("/api/runs", json={"question": "Web sources?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        result = data["result"]
+        assert result["web_sources"] == [
+            {
+                "url": "https://example.com/report",
+                "title": "Report",
+                "origin": "web:claude",
+                "verified": True,
+            }
+        ]
+        view = result["views"][0]
+        assert view["grounded"] is True
+        assert view["citations"][0]["url"] == "https://example.com/report"
+
+    def test_result_includes_debate(self, client):
+        post = client.post("/api/runs", json={"question": "Debate?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        result = data["result"]
+        assert [t["speaker"] for t in result["debate"]] == ["Bull", "Bear"]
+        assert result["debate"][0]["text"] == "Growth justifies the multiple."
+        assert result["debate_summary"].startswith("BULLISH")
+
+    def test_ungrounded_view_produces_warning(self, client):
+        post = client.post("/api/runs", json={"question": "Grounding?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        # credit_analyst view in the fake memo has grounded=False (default)
+        warnings = data["result"]["warnings"]
+        assert any("credit_analyst" in w and "ungrounded" in w for w in warnings)
+
     def test_done_result_has_cost_summary(self, client):
         post = client.post("/api/runs", json={"question": "Rates view?"})
         run_id = post.json()["run_id"]
@@ -251,6 +327,7 @@ class TestGetRunById:
 # ---------------------------------------------------------------------------
 # GET /api/runs/{id} — error path
 # ---------------------------------------------------------------------------
+
 
 class TestGetRunError:
     def test_error_path_sets_status_error(self, error_client):
@@ -278,6 +355,7 @@ class TestGetRunError:
 # ---------------------------------------------------------------------------
 # GET /api/runs — list
 # ---------------------------------------------------------------------------
+
 
 class TestListRuns:
     def test_returns_200(self, client):

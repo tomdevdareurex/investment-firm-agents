@@ -18,7 +18,7 @@ from typing import Any, Optional, Sequence, Union
 import httpx
 from openai import OpenAI
 
-from . import config
+from . import backends, config
 from .models import (
     DEFAULT_CHAT_MODEL,
     DEFAULT_EMBEDDING_MODEL,
@@ -340,6 +340,23 @@ def chat(
     Raises:
         PlaygroundError: if the response body is not JSON.
     """
+    # Backend dispatch: core code always calls this function; which provider
+    # actually serves the request is decided here (IFA_LLM_BACKEND / UI switch).
+    if backends.current_backend() == backends.DATABRICKS:
+        from . import databricks_backend
+
+        return databricks_backend.chat(
+            model,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            web_search=web_search,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_mode=json_mode,
+            extra=extra,
+        )
+
     msgs = list(messages)
 
     # Claude on this gateway rejects a `system` *message* in the array; it must be a
@@ -542,6 +559,16 @@ def supports_websearch(model: str, *, models: Optional[object] = None) -> Option
         return None
     return bool(entry["webSearch"])
 
+
+
+def supports_web_search_for(model: str) -> bool:
+    """Backend-aware, offline web-search capability check.
+
+    Core code (orchestrator) calls this instead of branching on model families,
+    so switching backends never requires core changes. Databricks: always
+    ``False``; Playground: Claude/Gemini families only.
+    """
+    return backends.supports_web_search(model)
 
 
 def get_token_usage() -> dict:
