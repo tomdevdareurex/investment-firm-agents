@@ -138,18 +138,26 @@
     chart.timeScale().fitContent();
   }
 
+  // Overlay/subpane renderers reuse live series via setData(); series are
+  // added/removed only when the checkbox state (or data availability) changes.
   function renderOverlays(payload) {
     if (!chart) return;
     SMA_CONFIGS.forEach((cfg) => {
       const wanted = document.getElementById(cfg.checkboxId).checked;
+      // Empty points = fewer bars than the SMA window — treat as unwanted.
+      const points = wanted ? computeSMA(payload.ohlc, cfg.period) : [];
       const existing = smaSeries[cfg.period];
-      if (existing) {
-        chart.removeSeries(existing);
-        delete smaSeries[cfg.period];
+      if (!points.length) {
+        if (existing) {
+          chart.removeSeries(existing);
+          delete smaSeries[cfg.period];
+        }
+        return;
       }
-      if (!wanted) return;
-      const points = computeSMA(payload.ohlc, cfg.period);
-      if (!points.length) return; // fewer bars than the SMA window — skip overlay
+      if (existing) {
+        existing.setData(points);
+        return;
+      }
       const line = chart.addLineSeries({
         color: cfg.color,
         lineWidth: 2,
@@ -182,15 +190,24 @@
 
   function renderServerOverlays(payload) {
     if (!chart) return;
-    // Clear any existing server line series first.
-    Object.values(serverSeries).forEach((line) => chart.removeSeries(line));
-    serverSeries = {};
     const overlays = (payload && payload.indicators) || {};
     SERVER_LINES.forEach((cfg) => {
       const box = document.getElementById(cfg.checkboxId);
-      if (!box || !box.checked) return;
       const points = overlays[cfg.name];
-      if (!Array.isArray(points) || !points.length) return;
+      const wanted = Boolean(box && box.checked)
+        && Array.isArray(points) && points.length > 0;
+      const existing = serverSeries[cfg.name];
+      if (!wanted) {
+        if (existing) {
+          chart.removeSeries(existing);
+          delete serverSeries[cfg.name];
+        }
+        return;
+      }
+      if (existing) {
+        existing.setData(points);
+        return;
+      }
       const line = chart.addLineSeries({
         color: cfg.color,
         lineWidth: 2,
@@ -214,13 +231,25 @@
 
   function renderSubpanes(payload) {
     if (!chart) return;
-    Object.values(subpaneSeries).forEach((series) => chart.removeSeries(series));
-    subpaneSeries = {};
     const overlays = (payload && payload.indicators) || {};
-    activeSubpanes().forEach((sp) => {
+    SUBPANES.forEach((sp) => {
+      const box = document.getElementById(sp.checkboxId);
+      const paneWanted = Boolean(box && box.checked);
       sp.lines.forEach((ln) => {
         const points = overlays[ln.name];
-        if (!Array.isArray(points) || !points.length) return;
+        const wanted = paneWanted && Array.isArray(points) && points.length > 0;
+        const existing = subpaneSeries[ln.name];
+        if (!wanted) {
+          if (existing) {
+            chart.removeSeries(existing);
+            delete subpaneSeries[ln.name];
+          }
+          return;
+        }
+        if (existing) {
+          existing.setData(points);
+          return;
+        }
         const series = ln.type === 'histogram'
           ? chart.addHistogramSeries({
             priceScaleId: sp.priceScaleId,
