@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from .base import Tool, ToolError
-from ..risk import risk_summary
+from ...data.risk import risk_summary
 from ..indicators import INDICATORS, IndicatorError, latest_snapshot
 
 

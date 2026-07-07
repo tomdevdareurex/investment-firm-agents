@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from investment_firm.core.risk import (
+from investment_firm.data.risk import (
     annualized_vol,
     expected_shortfall,
     historical_var,
