@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from investment_firm.core.technicals import (
+from investment_firm.data.technicals import (
     TechnicalsError,
     _interp_pct,
     format_number,

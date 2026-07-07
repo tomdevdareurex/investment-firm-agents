@@ -28,6 +28,15 @@ def test_core_indicators_shim_reexports_same_objects():
         assert getattr(old, name) is getattr(new, name), name
 
 
+def test_core_technicals_shim_reexports_same_objects():
+    import investment_firm.core.technicals as old
+    import investment_firm.data.technicals as new
+
+    assert old.__all__, "shim must declare its re-exports"
+    for name in old.__all__:
+        assert getattr(old, name) is getattr(new, name), name
+
+
 def test_data_package_does_not_import_core_or_interfaces():
     before = {m for m in sys.modules if m.startswith("investment_firm.")}
     import investment_firm.data.risk  # noqa: F401

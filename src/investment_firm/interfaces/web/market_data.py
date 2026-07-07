@@ -350,7 +350,7 @@ def attach_technicals(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of ``payload`` with a technical-summary block attached.
 
     Computes the investing.com-style gauge rows from the payload's own OHLC bars
-    via :func:`investment_firm.core.technicals.technical_summary`, so no extra
+    via :func:`investment_firm.data.technicals.technical_summary`, so no extra
     network fetch happens. If there is too little history (or pandas is missing),
     the summary is simply omitted rather than failing the whole chart request.
     """
@@ -358,7 +358,7 @@ def attach_technicals(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not ohlc:
         return payload
 
-    from ...core.technicals import TechnicalsError, technical_summary
+    from ...data.technicals import TechnicalsError, technical_summary
 
     try:
         summary = technical_summary(ohlc)
