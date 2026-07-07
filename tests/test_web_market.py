@@ -113,6 +113,18 @@ class TestPriceHistoryEndpoint:
         assert cache_path.exists()
         assert calls == [("AAPL", "5d", "1d")]
 
+    def test_technicals_param_is_accepted_and_degrades_gracefully(self, market_client):
+        client, _calls, _cache_path = market_client
+
+        # The fake fixture returns only two bars — too little for a summary — so
+        # the endpoint must still succeed and simply omit the technicals block.
+        resp = client.get(
+            "/api/market/price-history?ticker=AAPL&period=5d&interval=1d&technicals=true"
+        )
+
+        assert resp.status_code == 200
+        assert "technicals" not in resp.json()
+
     def test_second_request_uses_saved_cache(self, market_client):
         client, calls, _cache_path = market_client
 

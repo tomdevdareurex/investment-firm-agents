@@ -10,6 +10,7 @@ from .market_data import (
     MarketDataProviderError,
     MarketDataValidationError,
     attach_indicators,
+    attach_technicals,
     get_price_history,
 )
 from ...core.indicators import available_indicators
@@ -52,6 +53,10 @@ def price_history(
         pattern=r"^[A-Za-z0-9_,]*$",
         description="Optional comma-separated technical indicators to overlay, e.g. 'close_50_sma,rsi'.",
     ),
+    technicals: bool = Query(
+        default=False,
+        description="Attach an investing.com-style technical-summary gauge block.",
+    ),
 ) -> Dict[str, Any]:
     """Return chart-ready Yahoo Finance price history with cache metadata."""
     requested = [name.strip().lower() for name in indicators.split(",") if name.strip()]
@@ -77,6 +82,8 @@ def price_history(
         )
         if requested:
             payload = attach_indicators(payload, requested)
+        if technicals:
+            payload = attach_technicals(payload)
         return payload
     except MarketDataValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

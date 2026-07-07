@@ -99,8 +99,11 @@ class TestRunDebate:
             max_rounds=1,
             tracker=RunTracker(),
         )
-        assert result.transcript[0].render() == "Senior Research Bull: up"
-        assert result.transcript[1].render() == "Senior Research Bear: down"
+        assert result.transcript[0].render() == "Senior Research Bull (gpt-4.1): up"
+        assert result.transcript[1].render() == "Senior Research Bear (gpt-4.1): down"
+        # Each turn carries the model that produced it.
+        assert result.transcript[0].model == "gpt-4.1"
+        assert result.transcript[1].model == "gpt-4.1"
 
     def test_zero_rounds_skips_debate_and_judge(self, monkeypatch):
         from conftest import FakeLLM

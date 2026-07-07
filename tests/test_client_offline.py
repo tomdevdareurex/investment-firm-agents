@@ -210,6 +210,40 @@ def test_chat_omits_temperature_by_default(monkeypatch):
     assert "max_tokens" not in payload  # not a Claude model, none requested
 
 
+def test_chat_floors_gemini_max_tokens_against_thinking(monkeypatch):
+    # Gemini's hidden reasoning shares the output budget, so a tight cap would
+    # truncate the visible answer — the client floors it.
+    payload = _capture(
+        monkeypatch,
+        model="gemini-2.5-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=1200,
+    )
+    assert payload["max_tokens"] == 4096
+
+
+def test_chat_keeps_generous_gemini_max_tokens(monkeypatch):
+    # A caller asking for more than the floor is respected (only a floor, not a cap).
+    payload = _capture(
+        monkeypatch,
+        model="gemini-2.5-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=8000,
+    )
+    assert payload["max_tokens"] == 8000
+
+
+def test_chat_does_not_floor_gpt_max_tokens(monkeypatch):
+    # The floor is Gemini-only; other families keep the requested cap verbatim.
+    payload = _capture(
+        monkeypatch,
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=1200,
+    )
+    assert payload["max_tokens"] == 1200
+
+
 def test_web_search_auto_uses_tool_for_claude(monkeypatch):
     payload = _capture(
         monkeypatch,

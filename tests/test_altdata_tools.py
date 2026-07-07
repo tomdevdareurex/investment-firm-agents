@@ -260,6 +260,61 @@ class TestReddit:
             ds.get_reddit_sentiment("AAPL")
 
 
+class TestEdgar:
+    _FACTS = {
+        "units": {
+            "USD": [
+                {"val": 383285000000, "fy": 2024, "fp": "FY"},
+                {"val": 391035000000, "fy": 2025, "fp": "FY"},
+            ]
+        }
+    }
+
+    def test_returns_latest_value_with_provenance(self, monkeypatch):
+        _patch_get(monkeypatch, lambda url, **kw: _Resp(json_data=self._FACTS))
+        out = ds.get_company_filing("320193", concept="Revenues")
+        assert out["cik"] == "0000320193"
+        assert out["concept"] == "Revenues"
+        assert out["value"] == 391035000000
+        assert out["fiscal_period"] == "2025 FY"
+        assert "EDGAR" in out["source"]
+        assert out["as_of"]
+
+    def test_uses_sec_user_agent_env(self, monkeypatch):
+        captured = {}
+
+        def handler(url, **kw):
+            captured["headers"] = kw.get("headers", {})
+            return _Resp(json_data=self._FACTS)
+
+        monkeypatch.setenv(
+            "SEC_USER_AGENT", "investment-firm-agents contact@example.com"
+        )
+        _patch_get(monkeypatch, handler)
+        ds.get_company_filing("320193")
+        assert (
+            captured["headers"]["User-Agent"]
+            == "investment-firm-agents contact@example.com"
+        )
+
+    def test_falls_back_when_env_unset(self, monkeypatch):
+        captured = {}
+
+        def handler(url, **kw):
+            captured["headers"] = kw.get("headers", {})
+            return _Resp(json_data=self._FACTS)
+
+        monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+        _patch_get(monkeypatch, handler)
+        ds.get_company_filing("320193")
+        assert "investment-firm-agents" in captured["headers"]["User-Agent"]
+
+    def test_http_error_raises(self, monkeypatch):
+        _patch_get(monkeypatch, lambda url, **kw: _Resp(status=404, text="nope"))
+        with pytest.raises(ToolError):
+            ds.get_company_filing("000")
+
+
 class TestRegistration:
     def test_new_tools_registered(self):
         names = {t.name for t in default_data_tools()}

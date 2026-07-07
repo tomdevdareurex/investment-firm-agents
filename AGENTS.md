@@ -49,8 +49,12 @@ Nothing in `llm/` knows about `core/`.
 - `sanitize.py` — `sanitize_openai_messages(messages, *, tools_present)` balances
   Anthropic-style `tool_use`/`tool_result` histories for the strict Databricks
   backend (synthesizes missing tool results, drops orphans, flattens tool
-  exchanges to text when no tools are sent). Wired in `databricks_backend.chat`;
-  the Playground path does its own conversion and never uses this.
+  exchanges to text when no tools are sent), then strips response-echoed extras
+  (`audio`/`refusal`/`function_call`/… whitelisted to role/content/name/
+  tool_calls/tool_call_id) so a re-sent assistant turn never trips
+  `"messages.N.audio: Extra inputs are not permitted"`. Wired in
+  `databricks_backend.chat`; the Playground path does its own conversion and
+  never uses this.
 
 ### core/
 - `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`;

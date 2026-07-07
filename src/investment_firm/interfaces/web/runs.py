@@ -158,6 +158,8 @@ def _run_worker(
             "profile": memo.profile,
             "question": memo.question,
             "briefing": memo.briefing,
+            "briefing_role": memo.briefing_role,
+            "briefing_model": memo.briefing_model,
             "views": [
                 {
                     "role": v.role,

@@ -120,11 +120,58 @@ def _flatten(messages: Sequence[dict]) -> List[dict]:
     return out
 
 
+# Request-message keys the strict Databricks endpoint accepts. A response's
+# ``model_dump()`` echoes many empty extras (``audio``, ``refusal``,
+# ``function_call``, ``annotations``, ``reasoning_content`` ...) that a re-sent
+# history must NOT carry, or the endpoint 400s with
+# ``"messages.N.audio: Extra inputs are not permitted"``.
+_ALLOWED_MESSAGE_KEYS = frozenset(
+    {"role", "content", "name", "tool_calls", "tool_call_id"}
+)
+_ALLOWED_TOOL_CALL_KEYS = frozenset({"id", "type", "function"})
+_ALLOWED_FUNCTION_KEYS = frozenset({"name", "arguments"})
+
+
+def _strip_tool_call(call: dict) -> dict:
+    cleaned = {k: v for k, v in call.items() if k in _ALLOWED_TOOL_CALL_KEYS}
+    fn = cleaned.get("function")
+    if isinstance(fn, dict):
+        cleaned["function"] = {
+            k: v for k, v in fn.items() if k in _ALLOWED_FUNCTION_KEYS
+        }
+    return cleaned
+
+
+def _strip_message(message: dict) -> dict:
+    """Whitelist request-message keys, dropping response-echoed extras.
+
+    Drops ``None``-valued extras like ``audio``/``refusal`` (original key order
+    preserved). ``content: null`` is kept when the turn carries ``tool_calls``
+    (valid OpenAI shape) and coerced to ``""`` otherwise.
+    """
+    cleaned = {
+        k: v
+        for k, v in message.items()
+        if k in _ALLOWED_MESSAGE_KEYS and not (v is None and k != "content")
+    }
+    if "role" not in cleaned:
+        cleaned["role"] = message.get("role", "user")
+    calls = cleaned.get("tool_calls")
+    if isinstance(calls, list):
+        cleaned["tool_calls"] = [
+            _strip_tool_call(c) if isinstance(c, dict) else c for c in calls
+        ]
+    if cleaned.get("content") is None and not cleaned.get("tool_calls"):
+        cleaned["content"] = ""
+    return cleaned
+
+
 def sanitize_openai_messages(
     messages: Sequence[dict], *, tools_present: bool
 ) -> List[dict]:
     """Return a history safe to send to a strict OpenAI-compatible backend."""
     balanced = _balance(list(messages))
-    if tools_present:
-        return balanced
-    return _flatten(balanced)
+    repaired = balanced if tools_present else _flatten(balanced)
+    # Final pass: strip response-echoed extras (audio/refusal/...) from every turn
+    # so a re-sent assistant message never trips "Extra inputs are not permitted".
+    return [_strip_message(m) for m in repaired]

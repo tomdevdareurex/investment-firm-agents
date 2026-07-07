@@ -307,6 +307,43 @@ class TestSanitizeOpenAIMessages:
         out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
         assert out == msgs
 
+    def test_strips_response_echoed_extras(self):
+        # A re-sent assistant turn from Databricks model_dump() carries audio=None
+        # etc.; the strict endpoint 400s ("Extra inputs are not permitted") unless
+        # those empty extras are stripped before resend.
+        msgs = [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "hi",
+                "audio": None,
+                "refusal": None,
+                "function_call": None,
+                "annotations": [],
+            },
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
+        assert out[1] == {"role": "assistant", "content": "hi"}
+        assert "audio" not in out[1]
+
+    def test_strips_extras_but_keeps_tool_calls(self):
+        call = self._assistant_call("c1")
+        call["audio"] = None  # response echo
+        call["tool_calls"][0]["index"] = 0  # extra key on the tool_call
+        msgs = [
+            {"role": "user", "content": "q"},
+            call,
+            {"role": "tool", "tool_call_id": "c1", "content": "{}", "audio": None},
+        ]
+        out = sanitize.sanitize_openai_messages(msgs, tools_present=True)
+        assert "audio" not in out[1]
+        assert out[1]["tool_calls"][0] == {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "get_prices", "arguments": "{}"},
+        }
+        assert "audio" not in out[2]
+
     def test_dangling_tool_call_gets_synthesized_result(self):
         msgs = [
             {"role": "user", "content": "q"},

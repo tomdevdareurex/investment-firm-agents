@@ -444,6 +444,14 @@ footer {
   color: var(--color-text-muted);
 }
 
+.briefing-attribution {
+  margin: 0 0 var(--space-md);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
 .badge--rec {
   font-size: 1rem;
   padding: 4px 14px;
@@ -524,9 +532,38 @@ footer {
   border-left-color: #ef5350;
 }
 
+.debate-speaker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: 2px;
+}
+
+.debate-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4em;
+  height: 1.4em;
+  padding: 0 0.35em;
+  border-radius: 999px;
+  background: var(--color-surface-3, var(--color-border));
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
 .debate-speaker {
   display: inline-block;
   font-weight: 600;
+  margin-bottom: var(--space-xs);
+}
+
+.debate-model {
+  display: block;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
   margin-bottom: var(--space-xs);
 }
 
@@ -838,6 +875,170 @@ footer {
   color: var(--color-text-muted);
   word-break: break-word;
 }
+
+/* ── Technical summary gauges ── */
+.chart-technicals {
+  margin-top: var(--space-lg);
+}
+
+.tech-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.tech-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.tech-asof {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.tech-table {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.tech-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 104px;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.tech-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tech-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.tech-value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.tech-gauge {
+  padding-top: 4px;
+  padding-bottom: 18px; /* room for tick labels below the track */
+}
+
+.tech-track {
+  position: relative;
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: visible;
+}
+
+.tech-seg {
+  flex: 1 1 0;
+  height: 100%;
+}
+.tech-seg:first-child { border-radius: 999px 0 0 999px; }
+.tech-seg:last-child  { border-radius: 0 999px 999px 0; }
+
+/* Directional palette: red → grey → green. */
+.tech-seg--strong-sell { background: #c0392b; }
+.tech-seg--sell        { background: #e57373; }
+.tech-seg--neutral     { background: #6b7280; }
+.tech-seg--buy         { background: #66bb6a; }
+.tech-seg--strong-buy  { background: #1e8e3e; }
+
+/* Trend-strength palette: grey → blue (intensity, not direction). */
+.tech-seg--strength-0 { background: #4b5563; }
+.tech-seg--strength-1 { background: #3f6aa8; }
+.tech-seg--strength-2 { background: #3b82c4; }
+.tech-seg--strength-3 { background: #2f6fb0; }
+.tech-seg--strength-4 { background: #1e4e8c; }
+
+/* Volatility palette: grey → amber → red (intensity, not direction). */
+.tech-seg--vol-0 { background: #4b5563; }
+.tech-seg--vol-1 { background: #6b7f8c; }
+.tech-seg--vol-2 { background: #b8912f; }
+.tech-seg--vol-3 { background: #d97706; }
+.tech-seg--vol-4 { background: #c0392b; }
+
+.tech-tick {
+  position: absolute;
+  top: -3px;
+  transform: translateX(-50%);
+  height: 16px;
+  border-left: 1px solid rgba(228, 232, 240, 0.35);
+}
+
+.tech-tick-label {
+  position: absolute;
+  top: 17px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.tech-marker {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--color-text);
+  border: 2px solid var(--color-bg);
+  box-shadow: 0 0 0 1px rgba(228, 232, 240, 0.5);
+}
+
+.tech-action {
+  text-align: right;
+}
+
+.tech-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #0f1117;
+}
+
+.tech-pill--strong-sell { background: #c0392b; color: #fff; }
+.tech-pill--sell        { background: #e57373; }
+.tech-pill--neutral     { background: #9aa4b2; }
+.tech-pill--buy         { background: #66bb6a; }
+.tech-pill--strong-buy  { background: #1e8e3e; color: #fff; }
+.tech-pill--strength-0,
+.tech-pill--strength-1,
+.tech-pill--strength-2,
+.tech-pill--strength-3,
+.tech-pill--strength-4 { background: #3b82c4; color: #fff; }
+.tech-pill--vol-0 { background: #9aa4b2; }
+.tech-pill--vol-1 { background: #b8c2cc; }
+.tech-pill--vol-2 { background: #d4a24a; }
+.tech-pill--vol-3 { background: #d97706; color: #fff; }
+.tech-pill--vol-4 { background: #c0392b; color: #fff; }
+
+@media (max-width: 640px) {
+  .tech-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
+  }
+  .tech-action { text-align: left; }
+}
+
 
 /* ── Responsive ── */
 @media (max-width: 640px) {

@@ -117,8 +117,8 @@ def _web_capable_worker_model(profile_name: str) -> Optional[str]:
 
 def _build_briefing(
     question: str, profile_name: str, tracker: RunTracker
-) -> Tuple[str, List[str], List[Source]]:
-    """Run the librarian agent; return ``(briefing_text, sources, citations)``."""
+) -> Tuple[str, List[str], List[Source], str]:
+    """Run the librarian agent; return ``(briefing_text, sources, citations, model)``."""
     spec = _resolve(LIBRARIAN_ROLE, profile_name)
     if not client.supports_web_search_for(spec.model):
         # The librarian prefers web search; fall back to a capable model, or
@@ -152,7 +152,7 @@ def _build_briefing(
     view = librarian.run(f"{librarian_task}\n\nQuestion: {question}", tracker=tracker)
     # The librarian's notes capture which tools ran and with what result.
     sources = [n for n in librarian.memory.notes]
-    return view.rationale, sources, list(view.citations)
+    return view.rationale, sources, list(view.citations), spec.model
 
 
 def _synthesize(
@@ -231,6 +231,7 @@ def run_committee(
     memory = RunMemory()
     sources: List[str] = []
     web_sources: List[Source] = []
+    briefing_model = ""
 
     events.safe_emit(
         on_event, events.RUN_STARTED, detail=question, data={"profile": profile_name}
@@ -238,7 +239,7 @@ def run_committee(
 
     if not simple:
         events.safe_emit(on_event, events.BRIEFING_STARTED)
-        briefing, sources, librarian_citations = _build_briefing(
+        briefing, sources, librarian_citations, briefing_model = _build_briefing(
             question, profile_name, tracker
         )
         web_sources.extend(librarian_citations)
@@ -349,6 +350,8 @@ def run_committee(
         summary=summary,
         views=views,
         briefing=memory.briefing,
+        briefing_role=LIBRARIAN_ROLE if not simple else "",
+        briefing_model=briefing_model,
         debate=debate_turns,
         debate_summary=debate_summary,
         synth_role=synth_spec.name,

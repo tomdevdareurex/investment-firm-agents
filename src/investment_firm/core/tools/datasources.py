@@ -126,7 +126,11 @@ def get_company_filing(cik: str, concept: str = "Revenues") -> dict:
         f"https://data.sec.gov/api/xbrl/companyconcept/"
         f"CIK{cik_padded}/us-gaap/{concept}.json"
     )
-    headers = {"User-Agent": "investment-firm-agents (educational; contact: user)"}
+    user_agent = (
+        os.getenv("SEC_USER_AGENT", "").strip()
+        or "investment-firm-agents (educational; contact: user)"
+    )
+    headers = {"User-Agent": user_agent}
     resp = requests.get(url, headers=headers, timeout=30)
     if resp.status_code != 200:
         raise ToolError(

@@ -420,7 +420,7 @@ function renderDebateTab(result) {
   }
 
   panel.appendChild(el('h3', 'section-title', 'Bull / Bear Debate'));
-  debate.forEach((turn) => {
+  debate.forEach((turn, i) => {
     const speaker = (turn.speaker || '').toLowerCase();
     const side = speaker.includes('bull')
       ? 'bull'
@@ -428,7 +428,13 @@ function renderDebateTab(result) {
       ? 'bear'
       : 'other';
     const card = el('div', `debate-turn debate-turn--${side}`);
-    card.appendChild(el('span', 'debate-speaker', turn.speaker || '?'));
+    const speakerRow = el('div', 'debate-speaker-row');
+    speakerRow.appendChild(el('span', 'debate-order', String(i + 1)));
+    speakerRow.appendChild(el('span', 'debate-speaker', turn.speaker || '?'));
+    card.appendChild(speakerRow);
+    if (turn.model) {
+      card.appendChild(el('span', 'debate-model', turn.model));
+    }
     card.appendChild(textBlock(turn.text || '', 'debate-text'));
     panel.appendChild(card);
   });
@@ -451,6 +457,12 @@ function renderBriefingTab(result) {
     return;
   }
   panel.appendChild(el('h3', 'section-title', 'Research Librarian Briefing Packet'));
+  if (result.briefing_role) {
+    const model = result.briefing_model ? ` (${result.briefing_model})` : '';
+    panel.appendChild(
+      el('p', 'briefing-attribution', `${result.briefing_role.toUpperCase()}${model}`)
+    );
+  }
   panel.appendChild(textBlock(result.briefing, 'briefing-text'));
 }
 
@@ -675,7 +687,13 @@ function _appendLiveDebateTurn(ev) {
     ? 'bear'
     : 'other';
   const card = el('div', `debate-turn debate-turn--${side}`);
-  card.appendChild(el('span', 'debate-speaker', ev.agent || '?'));
+  const speakerRow = el('div', 'debate-speaker-row');
+  speakerRow.appendChild(el('span', 'debate-order', String(wrap.children.length + 1)));
+  speakerRow.appendChild(el('span', 'debate-speaker', ev.agent || '?'));
+  card.appendChild(speakerRow);
+  if (ev.model) {
+    card.appendChild(el('span', 'debate-model', ev.model));
+  }
   card.appendChild(textBlock(ev.detail || '', 'debate-text'));
   wrap.appendChild(card);
 }

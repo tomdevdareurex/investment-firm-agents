@@ -57,6 +57,10 @@ _SYSTEM_TEMPLATE = (
     "When tools are available, support market views with quantitative evidence — price "
     "levels, annualized volatility, and VaR/Expected Shortfall from the risk tool — and "
     "cite those numbers in the evidence field.\n"
+    "A stance on likely market direction is committee analysis, not a personal buy/sell "
+    "recommendation — always provide one, for any asset (equities, rates, FX, crypto). "
+    "Refusing, disclaiming your role, or replying in prose is a failure; the ONLY "
+    "acceptable output is the JSON object below.\n"
     "When you are ready, answer the question from your role's perspective and respond "
     "with ONLY a JSON object (no prose, no code fences) of the form:\n"
     '{{"stance": "BULLISH|BEARISH|NEUTRAL", "conviction": 1-5, '

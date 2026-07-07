@@ -66,6 +66,8 @@ def _make_memo(question: str = "Test question", profile: str = "balanced") -> Me
         summary="Committee recommends BUY based on fundamental strength.",
         views=views,
         briefing="GDP growing at 2.5%. CPI at 3.1%.",
+        briefing_role="research_librarian",
+        briefing_model="claude-4.5-haiku",
         sources=["ECB: rate 4.25%"],
         web_sources=[
             Source(
@@ -74,10 +76,14 @@ def _make_memo(question: str = "Test question", profile: str = "balanced") -> Me
         ],
         debate=[
             DebateTurn(
-                speaker="Senior Research Bull", text="Growth justifies the multiple."
+                speaker="Senior Research Bull",
+                model="gpt-4.1",
+                text="Growth justifies the multiple.",
             ),
             DebateTurn(
-                speaker="Senior Research Bear", text="Valuation leaves no margin."
+                speaker="Senior Research Bear",
+                model="gpt-4.1",
+                text="Valuation leaves no margin.",
             ),
         ],
         debate_summary="BULLISH: the bull case is better supported on earnings.",
@@ -320,6 +326,21 @@ class TestGetRunById:
         ]
         assert result["debate"][0]["text"] == "Growth justifies the multiple."
         assert result["debate_summary"].startswith("BULLISH")
+
+    def test_result_includes_debate_turn_model(self, client):
+        post = client.post("/api/runs", json={"question": "Debate model?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        result = data["result"]
+        assert [t["model"] for t in result["debate"]] == ["gpt-4.1", "gpt-4.1"]
+
+    def test_result_includes_briefing_attribution(self, client):
+        post = client.post("/api/runs", json={"question": "Briefing model?"})
+        run_id = post.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        result = data["result"]
+        assert result["briefing_role"] == "research_librarian"
+        assert result["briefing_model"] == "claude-4.5-haiku"
 
     def test_result_includes_cio_attribution(self, client):
         post = client.post("/api/runs", json={"question": "Attribution?"})

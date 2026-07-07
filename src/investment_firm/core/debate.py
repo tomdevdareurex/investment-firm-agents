@@ -127,6 +127,7 @@ def _turn(
         detail = get_error_message(resp) or "unknown error"
         return DebateTurn(
             speaker=label,
+            model=spec.model,
             text=errors.error_summary(f"{label} turn", f"API error: {detail}"),
             error=True,
         )
@@ -135,10 +136,11 @@ def _turn(
         # A successful call with empty text is a failure, not a budget skip.
         return DebateTurn(
             speaker=label,
+            model=spec.model,
             text=errors.error_summary(f"{label} turn", "model returned empty text"),
             error=True,
         )
-    return DebateTurn(speaker=label, text=text)
+    return DebateTurn(speaker=label, model=spec.model, text=text)
 
 
 def run_debate(

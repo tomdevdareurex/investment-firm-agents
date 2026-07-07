@@ -42,6 +42,7 @@ class DebateTurn(BaseModel):
     """One turn in the bull/bear investment debate."""
 
     speaker: str  # "Senior Research Bull" | "Senior Research Bear" | "Judge"
+    model: str = ""
     text: str = ""
     error: bool = Field(
         default=False, description="True if this turn is an explicit ERROR outcome"
@@ -49,7 +50,8 @@ class DebateTurn(BaseModel):
 
     def render(self) -> str:
         prefix = "!! " if self.error else ""
-        return f"{prefix}{self.speaker}: {self.text.strip()}"
+        speaker = f"{self.speaker} ({self.model})" if self.model else self.speaker
+        return f"{prefix}{speaker}: {self.text.strip()}"
 
 
 class AnalystView(BaseModel):
@@ -109,6 +111,13 @@ class Memo(BaseModel):
     summary: str = ""
     views: List[AnalystView] = Field(default_factory=list)
     briefing: str = ""
+    briefing_role: str = Field(
+        default="",
+        description="role that produced the briefing packet (e.g. research_librarian)",
+    )
+    briefing_model: str = Field(
+        default="", description="model that produced the briefing packet"
+    )
     debate: List[DebateTurn] = Field(
         default_factory=list, description="bull/bear debate transcript (if run)"
     )
@@ -184,8 +193,8 @@ class Memo(BaseModel):
             lines.append("-" * 72)
             lines.append("BULL / BEAR DEBATE:")
             lines.append("-" * 72)
-            for turn in self.debate:
-                lines.append(turn.render())
+            for i, turn in enumerate(self.debate, start=1):
+                lines.append(f"{i}. {turn.render()}")
                 lines.append("")
             if self.debate_summary:
                 if self.debate_judge_role:

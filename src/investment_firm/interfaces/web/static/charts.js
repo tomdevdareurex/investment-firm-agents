@@ -290,6 +290,64 @@
     node.appendChild(el('span', 'chart-cache-line', bits.join(' · ')));
   }
 
+  // ── Technical summary table (server-computed gauges) ────────────────────
+
+  function renderTechnicals(payload) {
+    const node = document.getElementById('chart-technicals');
+    if (!node) return;
+    node.replaceChildren();
+    const summary = payload && payload.technicals;
+    const rows = (summary && summary.rows) || [];
+    if (!rows.length) return;
+
+    const header = el('div', 'tech-header');
+    header.appendChild(el('h3', 'tech-title', 'Technical Summary'));
+    if (summary.as_of) {
+      header.appendChild(el('span', 'tech-asof', `as of ${summary.as_of}`));
+    }
+    node.appendChild(header);
+
+    const table = el('div', 'tech-table');
+    rows.forEach((row) => table.appendChild(buildTechRow(row)));
+    node.appendChild(table);
+  }
+
+  function buildTechRow(row) {
+    const rowEl = el('div', 'tech-row');
+
+    const nameCell = el('div', 'tech-name');
+    nameCell.appendChild(el('span', 'tech-label', row.label || row.key || '?'));
+    nameCell.appendChild(el('span', 'tech-value', row.display || ''));
+    rowEl.appendChild(nameCell);
+
+    const gauge = el('div', 'tech-gauge');
+    const track = el('div', 'tech-track');
+    (row.segments || []).forEach((seg) => {
+      track.appendChild(el('span', `tech-seg tech-seg--${seg.class}`));
+    });
+    // Threshold ticks (values at the zone boundaries).
+    (row.ticks || []).forEach((tick) => {
+      const t = el('span', 'tech-tick');
+      t.style.left = `${tick.pct}%`;
+      t.appendChild(el('span', 'tech-tick-label', tick.label));
+      track.appendChild(t);
+    });
+    // Current-value marker.
+    const pct = Math.max(0, Math.min(100, Number(row.marker_pct) || 0));
+    const marker = el('div', 'tech-marker');
+    marker.style.left = `${pct}%`;
+    marker.title = `${row.label}: ${row.display}`;
+    track.appendChild(marker);
+    gauge.appendChild(track);
+    rowEl.appendChild(gauge);
+
+    const action = el('div', 'tech-action');
+    action.appendChild(el('span', `tech-pill tech-pill--${row.action_class}`, row.action || ''));
+    rowEl.appendChild(action);
+
+    return rowEl;
+  }
+
   // ── Load flow ────────────────────────────────────────────────────────────
 
   async function loadChart() {
@@ -304,6 +362,7 @@
 
     const params = new URLSearchParams({ ticker, period, interval });
     if (force) params.set('force_refresh', 'true');
+    params.set('technicals', 'true');
     const serverIndicators = requestedServerIndicators();
     if (serverIndicators.length) params.set('indicators', serverIndicators.join(','));
 
@@ -315,11 +374,13 @@
       lastPayload = payload;
       renderSeries(payload);
       renderCacheInfo(payload);
+      renderTechnicals(payload);
       setStatus(`${payload.ticker} — ${payload.ohlc.length} bars (${period}/${interval})`);
     } catch (err) {
       lastPayload = null;
       destroyChart();
       document.getElementById('chart-cache').replaceChildren();
+      document.getElementById('chart-technicals').replaceChildren();
       if (err.status === 400) {
         setStatus(`Invalid request: ${err.message}`, 'error');
       } else if (err.status === 502) {
@@ -363,6 +424,9 @@
       const box = document.getElementById(id);
       if (box) box.addEventListener('change', () => { if (lastPayload) loadChart(); });
     });
+
+    // Load the default ticker (SPY) once so the chart is populated on page load.
+    loadChart();
   }
 
   if (document.readyState === 'loading') {

@@ -86,9 +86,9 @@
         <div class="field-row chart-controls">
           <div class="field field--ticker">
             <label for="chart-ticker">Ticker</label>
-            <input type="text" id="chart-ticker" name="ticker" value="AAPL"
+            <input type="text" id="chart-ticker" name="ticker" value="SPY"
                    maxlength="24" pattern="[A-Za-z0-9.^=_-]+" required
-                   placeholder="e.g. AAPL, ^GSPC" />
+                   placeholder="e.g. SPY, AAPL, ^GSPC" />
           </div>
           <div class="field">
             <label for="chart-period">Period</label>
@@ -171,6 +171,7 @@
       <div id="chart-status" class="chart-status" role="status" aria-live="polite"></div>
       <div id="chart-container" class="chart-container" aria-label="Price chart"></div>
       <div id="chart-cache" class="chart-cache" aria-live="polite"></div>
+      <div id="chart-technicals" class="chart-technicals" aria-label="Technical summary"></div>
     </section>
 
     <!-- Results panel — hidden until a run completes -->
