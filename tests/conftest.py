@@ -32,6 +32,27 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from investment_firm.llm import backends as _backends
+
+# ---------------------------------------------------------------------------
+# Hermetic environment
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_llm_backend(monkeypatch):
+    """Pin every test to the default (playground) backend regardless of .env.
+
+    A developer's ``.env`` may set ``IFA_LLM_BACKEND=databricks``; the offline
+    suite must never dispatch to a real backend adapter. Tests that need a
+    specific backend still work — they ``monkeypatch.setenv`` after this runs.
+    """
+    monkeypatch.delenv("IFA_LLM_BACKEND", raising=False)
+    _backends.reset_backend()
+    yield
+    _backends.reset_backend()
+
+
 # ---------------------------------------------------------------------------
 # Response-builder helpers
 # ---------------------------------------------------------------------------
