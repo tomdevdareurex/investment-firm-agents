@@ -80,8 +80,10 @@
     }
   }
 
-  function createChart(container) {
-    destroyChart();
+  // Create the chart + main series once; later fetches reuse them via setData()
+  // (destroying/recreating per fetch loses the user's context and is slower).
+  function ensureChart(container) {
+    if (chart) return;
     chart = LightweightCharts.createChart(container, {
       height: 420,
       layout: { background: { color: 'transparent' }, textColor: '#9aa4b2' },
@@ -108,14 +110,11 @@
     // applyLayout() so they reflow when RSI/MACD sub-panes are toggled.
   }
 
-  function renderSeries(payload) {
-    const container = document.getElementById('chart-container');
-    createChart(container);
-    candleSeries.setData(payload.ohlc);
-
+  // Precompute colored volume bars once per payload (up/down vs the bar's open).
+  function volumeData(payload) {
     const closeByTime = {};
     payload.ohlc.forEach((bar) => { closeByTime[bar.time] = bar; });
-    volumeSeries.setData((payload.volume || []).map((v) => {
+    return (payload.volume || []).map((v) => {
       const bar = closeByTime[v.time];
       const up = !bar || bar.close >= bar.open;
       return {
@@ -123,7 +122,14 @@
         value: v.value,
         color: up ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
       };
-    }));
+    });
+  }
+
+  function renderSeries(payload) {
+    const container = document.getElementById('chart-container');
+    ensureChart(container);
+    candleSeries.setData(payload.ohlc);
+    volumeSeries.setData(volumeData(payload));
 
     renderOverlays(payload);
     renderServerOverlays(payload);
