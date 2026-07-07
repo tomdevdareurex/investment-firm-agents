@@ -285,3 +285,43 @@ class TestRealFirm:
         for profile in ("budget", "balanced", "premium"):
             spec = resolve_roles(["news_analyst"], profile=profile)["news_analyst"]
             assert spec.model.startswith("claude")
+
+
+# ---------------------------------------------------------------------------
+# Firm-config path resolution (IFA_FIRM_CONFIG override)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigPathOverride:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self, monkeypatch):
+        """Isolate the load_firm cache; restore the real config afterwards."""
+        monkeypatch.delenv("IFA_FIRM_CONFIG", raising=False)
+        load_firm.cache_clear()
+        yield
+        load_firm.cache_clear()
+
+    def test_env_override_points_at_alternate_yaml(self, tmp_path, monkeypatch):
+        alt = tmp_path / "alt_firm.yaml"
+        alt.write_text(
+            "default_profile: solo\n"
+            "profiles:\n"
+            "  solo:\n"
+            "    WORKER: [gpt-4o-mini]\n"
+            "roles:\n"
+            "  lone_analyst: {group: research, tier: WORKER, mandate: Only view.}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("IFA_FIRM_CONFIG", str(alt))
+        firm = load_firm()
+        assert firm["default_profile"] == "solo"
+        assert profile_names(firm) == ["solo"]
+
+    def test_missing_override_path_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("IFA_FIRM_CONFIG", str(tmp_path / "nope.yaml"))
+        with pytest.raises(RosterError, match="Firm config not found"):
+            load_firm()
+
+    def test_default_path_still_loads_repo_config(self, monkeypatch):
+        firm = load_firm()
+        assert "profiles" in firm and "roles" in firm

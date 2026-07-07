@@ -9,6 +9,7 @@ no LLM calls) so it is fully offline-testable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -19,7 +20,13 @@ import yaml
 from ..llm import config
 from ..llm.models import family
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "firm.yaml"
+
+def _config_path() -> Path:
+    """Resolve the firm config path lazily (``IFA_FIRM_CONFIG`` env override wins)."""
+    override = os.getenv("IFA_FIRM_CONFIG", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / "config" / "firm.yaml"
 
 
 class RosterError(RuntimeError):
@@ -29,7 +36,7 @@ class RosterError(RuntimeError):
 @lru_cache(maxsize=1)
 def load_firm(path: Optional[str] = None) -> dict:
     """Load and cache the parsed ``firm.yaml`` document."""
-    cfg_path = Path(path) if path else _CONFIG_PATH
+    cfg_path = Path(path) if path else _config_path()
     if not cfg_path.exists():
         raise RosterError(f"Firm config not found: {cfg_path}")
     with cfg_path.open("r", encoding="utf-8") as handle:
