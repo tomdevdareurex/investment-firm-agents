@@ -12,7 +12,7 @@ import math
 import pandas as pd
 import pytest
 
-from investment_firm.core import indicators
+from investment_firm.data import indicators
 
 
 def _ohlcv(rows: int = 60) -> pd.DataFrame:

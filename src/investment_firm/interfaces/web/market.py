@@ -13,7 +13,7 @@ from .market_data import (
     attach_technicals,
     get_price_history,
 )
-from ...core.indicators import available_indicators
+from ...data.indicators import available_indicators
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 

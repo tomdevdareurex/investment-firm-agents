@@ -300,7 +300,7 @@ def get_price_history(
 def attach_indicators(payload: Dict[str, Any], names: Any) -> Dict[str, Any]:
     """Return a copy of ``payload`` with chart-ready indicator overlays attached.
 
-    Uses the shared :mod:`investment_firm.core.indicators` engine on the payload's
+    Uses the shared :mod:`investment_firm.data.indicators` engine on the payload's
     own OHLC rows, so the overlay values match exactly what the ``get_indicators``
     agent tool reports for the same bars. ``names`` is a comma-separated string or
     a sequence of catalog indicator names (assumed already validated by the route).
@@ -322,7 +322,7 @@ def attach_indicators(payload: Dict[str, Any], names: Any) -> Dict[str, Any]:
             '.venv\\Scripts\\python.exe -m pip install -e ".[data,api]"'
         ) from exc
 
-    from ...core.indicators import IndicatorError, overlay_series
+    from ...data.indicators import IndicatorError, overlay_series
 
     times = [row["time"] for row in ohlc]
     volume_by_time = {v["time"]: v.get("value", 0) for v in payload.get("volume", [])}

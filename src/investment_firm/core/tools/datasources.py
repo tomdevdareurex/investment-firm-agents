@@ -16,7 +16,7 @@ from typing import List
 
 from .base import Tool, ToolError
 from ...data.risk import risk_summary
-from ..indicators import INDICATORS, IndicatorError, latest_snapshot
+from ...data.indicators import INDICATORS, IndicatorError, latest_snapshot
 
 
 def _now_iso() -> str:
@@ -277,7 +277,7 @@ def get_indicators(
 ) -> dict:
     """Return the latest technical-indicator values for ``ticker``.
 
-    Uses Yahoo Finance OHLCV and the shared :mod:`investment_firm.core.indicators`
+    Uses Yahoo Finance OHLCV and the shared :mod:`investment_firm.data.indicators`
     engine — the exact same computation that feeds the web chart overlays, so a
     value cited here matches the value plotted on the chart. ``indicators`` is a
     comma-separated list from the supported catalog.
