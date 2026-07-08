@@ -1,12 +1,49 @@
 # Handover — investment-firm-agents
 
-_Last updated: 2026-07-06 (latest: fable-5 — named Bull/Bear debate, live step-event streaming, CIO attribution, real error handling, read-only quant consultant). Branch: `fable-5-debate-streaming-attribution` (uncommitted on top of the pre-fable-5 checkpoint)._
+_Last updated: 2026-07-07 (latest: structural refactor Steps 5–7 in progress — charts.js series reuse; Steps 0–4 committed on `main`). See the top session section for exact resume state._
 
 ## What this repo is
 
 Buy-side investment firm simulated as orchestrated LLM agents on the Deutsche
 Börse AI Playground gateway → structured Investment Committee memo.
 **Decision-support only — never executes trades.**
+
+---
+
+## Session 2026-07-07: structural refactor Steps 5–7 (charts.js reuse + final review) — IN PROGRESS
+
+**Plan:** `~/.claude/plans/you-are-working-in-warm-fog.md` (original, Steps 0–7) and
+`~/.claude/plans/continue-wiht-the-previous-linear-moth.md` (this continuation).
+Behavior-preserving refactor; Steps 0–4 committed on `main`
+(`ca789fb` lazy firm.yaml path + `IFA_FIRM_CONFIG`, `f71eb80` data/risk,
+`292a553` data/indicators, `a74f684` data/technicals — `data/` package with permanent
+re-export shims at the old `core/` paths). Baseline suite: **441 passed** offline.
+
+### State right now (if resuming after token cutoff)
+
+- **Step 5 (chart reuse on refetch) — implemented and STAGED** in git index:
+  `charts.js` `ensureChart()` (create chart+candle+volume once, `setData()` per fetch),
+  `volumeData()` helper, single `fitContent()` after full render. The staged snapshot is
+  the Step-5-only state. Commit it as its own commit:
+  `git commit -m "refactor: reuse chart + main series across fetches in charts.js"`
+  (do NOT `git add` charts.js first — the working tree already contains Step 6).
+- **Step 6 (overlay/subpane series reuse on toggle) — implemented in WORKING TREE**
+  (unstaged): `renderOverlays` / `renderServerOverlays` / `renderSubpanes` now diff
+  against checkbox+data state, `setData()` on existing series, add/remove only on
+  change. Keyed maps unchanged (`smaSeries` by period, `serverSeries`/`subpaneSeries`
+  by indicator name). After Step 5 commit: `git add` charts.js + commit
+  `refactor: reuse overlay/subpane series on toggle in charts.js`.
+- **web-ui-tester** agent was launched for browser verification (uvicorn :8000 +
+  Playwright, Market Charts panel only — never trigger committee runs). If its result
+  is unknown, re-run it: load SPY, switch ticker/period (chart instance must survive
+  refetch), double-toggle SMA20/50, EMA10, SMA200, Boll, RSI, MACD (layout reflow),
+  invalid ticker → error path clears chart, resize. Suite after both steps: 441 passed.
+- **Step 7 (pending):** full pytest + black no-op; **provenance-auditor** +
+  **scope-compliance-guard** over `ea91e7f..HEAD`; final summary. AGENTS.md is stale
+  re: `data/` layer (`_Last reconciled_ 2026-07-05`) — update only if the user asks.
+- `.claude/settings.local.json` modified — local permissions churn, do not commit.
+- Deferred (documented, not done): lightweight-charts v5 bump, datasources
+  per-provider split, rAF batching, `core/graph/` folder (rejected).
 
 ---
 

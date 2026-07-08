@@ -184,6 +184,7 @@ def _run_worker(
             "debate_judge_role": memo.debate_judge_role,
             "debate_judge_model": memo.debate_judge_model,
             "cost_summary": tracker.render_summary(),
+            "cost_usd_estimate": round(tracker.total_usd, 4),
             "call_records": call_records,
             "warnings": warnings,
             "disclaimer": investment_firm.DISCLAIMER,

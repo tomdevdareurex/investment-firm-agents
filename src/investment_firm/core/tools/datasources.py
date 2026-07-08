@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from .base import Tool, ToolError
+from ...data.backtest import STRATEGIES, BacktestError, run_strategy
 from ...data.risk import risk_summary
 from ...data.indicators import INDICATORS, IndicatorError, latest_snapshot
 
@@ -264,6 +265,70 @@ def run_backtest(ticker: str, period: str = "1y", level: float = 0.99) -> dict:
         "es_1d_pct": _pct(summary["es_1d"]),
         "var_level": summary["var_level"],
         "source": "computed from yfinance closes (buy-and-hold; risk via risk.py)",
+    }
+
+
+def run_strategy_backtest(
+    ticker: str,
+    strategy: str = "sma_crossover",
+    period: str = "1y",
+    cost_bps: float = 0.0,
+    level: float = 0.99,
+) -> dict:
+    """Read-only rule-based (long/flat) strategy backtest for ``ticker``.
+
+    Signals come from the shared indicator engine (same catalog as
+    ``get_indicators`` and the web charts); positions are shifted one bar to
+    avoid lookahead. Historical compute only — no orders, positions, or
+    portfolio state; never a trade instruction. Percent figures carry a
+    ``_pct`` suffix; a buy-and-hold benchmark is included for comparison.
+    """
+    _require("yfinance")
+    import yfinance as yf  # type: ignore
+
+    hist = yf.Ticker(ticker).history(period=period)
+    if hist is None or hist.empty:
+        raise ToolError(f"no price data for {ticker!r}")
+
+    as_of = hist.index[-1]
+    try:
+        as_of_iso = as_of.date().isoformat()
+    except AttributeError:
+        as_of_iso = str(as_of)
+
+    try:
+        result = run_strategy(
+            hist.reset_index(), strategy, cost_bps=cost_bps, level=level
+        )
+    except BacktestError as exc:
+        raise ToolError(str(exc)) from exc
+
+    def _pct(val: object) -> float:
+        return round(float(val) * 100, 2)  # type: ignore[arg-type]
+
+    return {
+        "ticker": ticker.upper(),
+        "period": period,
+        "as_of": as_of_iso,
+        "strategy": result["strategy"],
+        "rule": result["rule"],
+        "n_obs": result["n_obs"],
+        "total_return_pct": _pct(result["total_return"]),
+        "annualized_return_pct": _pct(result["annualized_return"]),
+        "benchmark_total_return_pct": _pct(result["benchmark_total_return"]),
+        "benchmark_annualized_return_pct": _pct(result["benchmark_annualized_return"]),
+        "n_trades": result["n_trades"],
+        "time_in_market_pct": _pct(result["time_in_market"]),
+        "cost_bps": result["cost_bps"],
+        "ann_vol_pct": _pct(result["ann_vol"]),
+        "max_drawdown_pct": _pct(result["max_drawdown"]),
+        "hist_var_1d_pct": _pct(result["hist_var_1d"]),
+        "es_1d_pct": _pct(result["es_1d"]),
+        "var_level": result["var_level"],
+        "source": (
+            "computed from yfinance closes (signals via data/indicators; "
+            "long/flat simulation via data/backtest.py)"
+        ),
     }
 
 
@@ -807,6 +872,56 @@ _BACKTEST_TOOL = Tool(
 )
 
 
+_STRATEGY_BACKTEST_TOOL = Tool(
+    name="run_strategy_backtest",
+    description=(
+        "Run a read-only, rule-based long/flat strategy backtest for a stock/ETF "
+        "ticker over a lookback window. Signals come from the shared technical-"
+        "indicator engine (no lookahead: day-t signal earns the t->t+1 return). "
+        "Reports strategy total/annualized return vs a buy-and-hold benchmark, "
+        "number of trades, time in market, annualized volatility, max drawdown, "
+        "and 1-day VaR/ES of the strategy equity curve (all percent figures). "
+        "Historical compute only — never a trade instruction. Strategies: "
+        + "; ".join(f"{name}: {desc}" for name, desc in sorted(STRATEGIES.items()))
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "ticker": {
+                "type": "string",
+                "description": "Yahoo Finance ticker symbol, e.g. 'AAPL' or 'SPY'",
+            },
+            "strategy": {
+                "type": "string",
+                "enum": sorted(STRATEGIES),
+                "description": "Rule to backtest (long/flat)",
+                "default": "sma_crossover",
+            },
+            "period": {
+                "type": "string",
+                "description": "Lookback period, e.g. '1y', '2y', '5y'",
+                "default": "1y",
+            },
+            "cost_bps": {
+                "type": "number",
+                "description": (
+                    "Transaction cost in basis points charged on each position "
+                    "change (default 0)"
+                ),
+                "default": 0.0,
+            },
+            "level": {
+                "type": "number",
+                "description": "VaR/ES confidence level between 0 and 1 (default 0.99)",
+                "default": 0.99,
+            },
+        },
+        "required": ["ticker"],
+    },
+    func=run_strategy_backtest,
+)
+
+
 _INDICATORS_TOOL = Tool(
     name="get_indicators",
     description=(
@@ -961,6 +1076,7 @@ def default_data_tools() -> List[Tool]:
         _EDGAR_TOOL,
         _RISK_TOOL,
         _BACKTEST_TOOL,
+        _STRATEGY_BACKTEST_TOOL,
         _FRED_TOOL,
         _PREDICTION_MARKET_TOOL,
         _STOCKTWITS_TOOL,

@@ -35,7 +35,12 @@ def plan_roles(
     tracker: Optional[RunTracker] = None,
 ) -> List[str]:
     """Return an ordered list of role names to run, chosen by the planner model."""
-    catalogue = "\n".join(f"- {c.name}: {c.mandate}" for c in candidates)
+    catalogue = "\n".join(
+        f"- {c.name}"
+        f"{' (optional — include only if the question clearly needs it)' if c.optional else ''}"
+        f": {c.mandate}"
+        for c in candidates
+    )
     valid = {c.name for c in candidates}
     user = f"Question: {question}\n\nAvailable roles:\n{catalogue}"
     messages = [
@@ -61,5 +66,7 @@ def plan_roles(
                 return chosen
         except (ValueError, TypeError):
             pass
-    # Fallback: keep every candidate (never stall the run).
-    return [c.name for c in candidates]
+    # Fallback: keep every core (non-optional) candidate — never stall the run,
+    # never fan out to the optional specialists on a parse failure.
+    core = [c.name for c in candidates if not c.optional]
+    return core or [c.name for c in candidates]

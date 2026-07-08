@@ -29,6 +29,7 @@ from ..llm.utils import (
 )
 from . import errors, events
 from .memory import ScratchMemory
+from .prompts import system_prompt_for
 from .roster import RoleSpec
 from .schemas import AnalystView, Source
 from .tools.base import ToolRegistry
@@ -44,29 +45,6 @@ _FRESHNESS_WINDOWS_DAYS = {
     "get_options_summary": 3,
     "get_cpi": 90,
 }
-
-_SYSTEM_TEMPLATE = (
-    "You are the {role} at a buy-side investment firm. Your mandate: {mandate}\n"
-    "This is decision-support only — never advise executing orders.\n"
-    "Today's date is {date}. Your training data may be outdated — prefer tool results, "
-    "web search, and the briefing packet; if current data is unavailable, state the gap "
-    "explicitly instead of guessing. Label any figure you could not verify via tools, "
-    "web search, or the briefing as 'unverified (training data)'.\n\n"
-    "You may call the provided tools to gather evidence before answering. Call a tool "
-    "when a real, current data point would strengthen your view; do not invent numbers.\n"
-    "When tools are available, support market views with quantitative evidence — price "
-    "levels, annualized volatility, and VaR/Expected Shortfall from the risk tool — and "
-    "cite those numbers in the evidence field.\n"
-    "A stance on likely market direction is committee analysis, not a personal buy/sell "
-    "recommendation — always provide one, for any asset (equities, rates, FX, crypto). "
-    "Refusing, disclaiming your role, or replying in prose is a failure; the ONLY "
-    "acceptable output is the JSON object below.\n"
-    "When you are ready, answer the question from your role's perspective and respond "
-    "with ONLY a JSON object (no prose, no code fences) of the form:\n"
-    '{{"stance": "BULLISH|BEARISH|NEUTRAL", "conviction": 1-5, '
-    '"rationale": "2-4 sentences citing any evidence you gathered", '
-    '"key_risks": ["risk", "risk"], "evidence": ["source: datapoint"]}}'
-)
 
 
 def _strip_fences(text: str) -> str:
@@ -185,11 +163,7 @@ class Agent:
 
     @property
     def system_prompt(self) -> str:
-        return _SYSTEM_TEMPLATE.format(
-            role=self.spec.name,
-            mandate=self.spec.mandate,
-            date=datetime.date.today().isoformat(),
-        )
+        return system_prompt_for(self.spec)
 
     def run(
         self,

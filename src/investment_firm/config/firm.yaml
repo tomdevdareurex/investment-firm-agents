@@ -75,24 +75,28 @@ roles:
   ic_chair:
     group: governance
     tier: HEAD                # cost note: override to SENIOR (or merge with cio) to save spend
+    optional: true            # tally unenforced until M2
     mandate: Chairs the Investment Committee; tallies weighted votes; breaks ties.
     votes: false
     tally: true
   pm:
     group: governance
     tier: AUTHORITY
+    optional: true            # no PM step in the pipeline yet
     mandate: Synthesize desk views into a sized proposed trade/allocation.
     votes: true
     vote_weight: 3
   compliance:
     group: governance
     tier: SENIOR
+    optional: true            # veto unenforced until M2
     mandate: Apply hard constraints (position limits, restricted list); veto/constrain.
     votes: false
     veto: true
   devils_advocate:
     group: governance
     tier: AUTHORITY
+    optional: true
     mandate: Build the strongest counter-case to the emerging consensus.
     votes: true
     vote_weight: 1
@@ -102,6 +106,7 @@ roles:
     group: research
     tier: WORKER
     family: gpt
+    optional: true            # lean roster keeps only economist_medium by default
     mandate: Short-term macro view (0-3m).
   economist_medium:
     group: research
@@ -112,6 +117,7 @@ roles:
     group: research
     tier: WORKER
     family: claude
+    optional: true            # lean roster keeps only economist_medium by default
     mandate: Long-term macro / structural view (1y+).
   strategist:
     group: research
@@ -175,7 +181,9 @@ roles:
   bull_researcher:
     group: research
     tier: SENIOR
-    family: gpt              # adversarial diversity: bull=GPT vs bear=Claude
+    model: gpt-5.5           # deliberate high-tier debate pin overriding the profile;
+                             # gpt-5.5 only exists in premium tier lists, hence explicit pin
+                             # (adversarial diversity: bull=GPT vs bear=Claude)
     mandate: >
       Bull researcher — in the investment debate, build the strongest evidence-based
       BULLISH case from the analyst views and briefing, rebutting the bear directly.
@@ -183,7 +191,8 @@ roles:
   bear_researcher:
     group: research
     tier: SENIOR
-    family: claude           # adversarial diversity: bear=Claude vs bull=GPT
+    model: claude-4.8-opus   # deliberate high-tier debate pin overriding the profile
+                             # (adversarial diversity: bear=Claude vs bull=GPT)
     mandate: >
       Bear researcher — in the investment debate, build the strongest evidence-based
       BEARISH case from the analyst views and briefing, rebutting the bull directly.
@@ -198,14 +207,17 @@ roles:
   rates_desk:
     group: trading
     tier: WORKER
+    optional: true
     mandate: Execution feasibility + flow color for rates.
   equity_desk:
     group: trading
     tier: WORKER
+    optional: true
     mandate: Execution feasibility + flow color for equities.
   swaps_desk:
     group: trading
     tier: WORKER
+    optional: true
     mandate: Execution feasibility for swaps/derivatives.
   fx_desk:
     group: trading
@@ -217,6 +229,7 @@ roles:
   quant:
     group: quant
     tier: SENIOR
+    optional: true
     mandate: Systematic signals / factor view.
     votes: true
     vote_weight: 2
@@ -232,10 +245,12 @@ roles:
   credit_risk:
     group: risk
     tier: WORKER
+    optional: true
     mandate: Issuer/counterparty default risk.
   liquidity_risk:
     group: risk
     tier: WORKER
+    optional: true
     mandate: Exit feasibility vs ADV / position size.
 
   # --- Data ----------------------------------------------------------------

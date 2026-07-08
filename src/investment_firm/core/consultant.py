@@ -43,7 +43,13 @@ DEFAULT_CONSULTANT_MODEL = "claude-4.8-opus"
 
 # The only tools the consultant may use — all read-only historical compute.
 CONSULTANT_TOOL_NAMES = frozenset(
-    {"get_prices", "get_indicators", "compute_risk_metrics", "run_backtest"}
+    {
+        "get_prices",
+        "get_indicators",
+        "compute_risk_metrics",
+        "run_backtest",
+        "run_strategy_backtest",
+    }
 )
 
 _MAX_STEPS = 4

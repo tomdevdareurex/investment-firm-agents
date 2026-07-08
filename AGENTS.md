@@ -1,5 +1,5 @@
 # AGENTS.md
-_Last reconciled: 2026-07-05 (optional OpenBB data tools: yield curve, options summary, CPI)_
+_Last reconciled: 2026-07-08 (core/prompts/ library; lean roster with optional roles; bull/bear model pins; data/backtest.py strategy backtester + run_strategy_backtest tool)_
 
 ## Overview
 - Buy-side investment firm simulated as orchestrated LLM agents; produces an Investment
@@ -59,19 +59,35 @@ Nothing in `llm/` knows about `core/`.
 ### core/
 - `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`;
   tier round-robin + family hints + per-role model pin.
-- `planner.py` — `plan_roles()`: LLM call picks ordered analyst subset; falls back
-  to all candidates on unparseable JSON.
+- `planner.py` — `plan_roles()`: LLM call picks ordered analyst subset; catalogue
+  annotates `optional: true` roles; falls back to the non-optional core candidates
+  on unparseable JSON (all candidates only if every one is optional).
+- `prompts/` — department-organized system-prompt library (M1.8). `base.py`:
+  `BASE_HEADER` + FROZEN `JSON_CONTRACT` + `compose()` (contract appended to every
+  prompt, can't be dropped). Role bodies: `analysts.py` (8 research bodies),
+  `economists.py` (ONE horizon-parameterized template × 3), `trading.py` (ONE
+  asset-class-parameterized desk template × 4), `risk.py` (`MARKET_RISK_BODY` +
+  lens-parameterized credit/liquidity), `governance.py`, `librarian.py`,
+  `debate.py` (`BULL_LABEL`/`BEAR_LABEL` + enriched bull/bear/judge prompts).
+  `registry.py`: `body_for(spec)` fallback chain — role body → department body
+  (by firm.yaml `group`) → generic mandate body. Public API:
+  `system_prompt_for(spec)`. Plain strings only — no llm imports, no
+  model-family branching; firm.yaml `mandate` is now a planner-hint/doc only
+  (consumed just by the generic fallback).
 - `agent.py` — `Agent`: tool-using observe-think-act loop; `_strip_fences`,
   `_salvage_fields`, `_extract_json_block`; `_parse` cascade; resilience ladder
   (error retry without tools → fallback view; finalization call on max_steps exhaust).
   Accepts `web_search` / `web_search_max_uses` params (set by orchestrator).
+  System prompt comes from `prompts.system_prompt_for(spec)`.
 - `orchestrator.py` — `run_committee()`: briefing → plan → analysts → CIO synthesis;
   `simple=True` for the fixed-analyst dry-run path. Accepts `on_event=None` and
   emits coarse `StepEvent`s (run/briefing/plan/analyst/debate/synthesis/run_done);
-  populates `Memo` CIO attribution fields.
+  populates `Memo` CIO attribution fields. `CANDIDATE_ANALYSTS` (9 core) +
+  `OPTIONAL_ANALYSTS` (6, annotated as optional in the planner catalogue).
 - `debate.py` — `run_debate()`: alternating Senior Research Bull/Bear turns
-  (`BULL_LABEL`/`BEAR_LABEL`) over the analysts' full views, then a CIO judge;
-  turn/judge failures yield explicit ERROR outcomes; accepts `on_event`.
+  (`BULL_LABEL`/`BEAR_LABEL`, imported from `prompts.debate`) over the analysts'
+  full views, then a CIO judge; turn/judge failures yield explicit ERROR
+  outcomes; accepts `on_event`.
 - `events.py` — step-event bus: `StepEvent`, `safe_emit` (swallows consumer
   errors), `to_dict`, kind constants. Opt-in `on_event=None`; zero LLM cost.
 - `errors.py` — shared error classifier: `error_summary`, `api_error_view`,
@@ -79,7 +95,8 @@ Nothing in `llm/` knows about `core/`.
   conviction 0); API errors go to `key_risks`, never rationale.
 - `consultant.py` — read-only quant consultant: `Consultant.ask()` over a
   `RunContext` (memo + step events); default `claude-4.8-opus`
-  (`IFA_CONSULTANT_MODEL`); read-only tool subset `CONSULTANT_TOOL_NAMES`;
+  (`IFA_CONSULTANT_MODEL`); read-only tool subset `CONSULTANT_TOOL_NAMES`
+  (prices, indicators, risk metrics, buy-and-hold + strategy backtests);
   refuses trades/writes; `_finalize` never re-bills an already-generated answer.
 - `memory.py` — `ScratchMemory` (per-agent working notes), `RunMemory` (shared
   briefing + colleagues' findings across agents).
@@ -89,8 +106,14 @@ Nothing in `llm/` knows about `core/`.
   JSON error envelopes rather than crashing the run.
 - `tools/datasources.py` — free read-only tools: `get_prices` (yfinance),
   `get_ecb_rate`, `get_worldbank_indicator`, `get_company_filing` (EDGAR),
-  `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via `risk.py`),
-  `run_backtest` (read-only buy-and-hold historical compute via `risk.py`).
+  `get_indicators` (whitelisted stockstats catalog via `data/indicators.py`),
+  `compute_risk_metrics` (VaR / Expected Shortfall / vol / drawdown via
+  `data/risk.py`), `run_backtest` (buy-and-hold historical compute),
+  `run_strategy_backtest` (rule-based long/flat strategies via
+  `data/backtest.py` — signals from the shared indicator engine, percent
+  outputs, buy-and-hold benchmark), plus `get_fred_series`,
+  `get_prediction_market_odds`, `get_stocktwits_sentiment`,
+  `get_av_overview`, `get_reddit_sentiment`.
 - `tools/openbb_datasources.py` — optional OpenBB Platform tools (keyless providers,
   provenance-tagged like `datasources.py`): `get_yield_curve` (Fed H.15),
   `get_options_summary` (Cboe chains, summarized — never raw), `get_cpi` (OECD
@@ -101,9 +124,22 @@ Nothing in `llm/` knows about `core/`.
   `openbb.package.*` modules import `OBBject_<Model>` names that
   `openbb_core.app.provider_interface` never exports; seen with openbb 4.7.2).
   OpenBB is AGPLv3 — treated as local/personal use here.
+### data/
+Pure, network-free compute — must not import from `core/` or `interfaces/`
+(both import from here). Every function takes already-fetched frames/series.
 - `risk.py` — pure-stdlib quant metrics: `returns_from_prices`, `historical_var`,
   `parametric_var`, `expected_shortfall`, `annualized_vol`, `max_drawdown`,
   `risk_summary`. Positive values = losses (documented sign convention).
+- `indicators.py` — shared stockstats indicator engine over a whitelisted
+  catalog; feeds `get_indicators`, the web charts, and backtest signals
+  (chart==agent invariant).
+- `backtest.py` — rule-based long/flat strategy backtester over the indicator
+  engine: `STRATEGIES` catalog (sma_crossover, macd_crossover, rsi_reversion,
+  bollinger_reversion) + `run_strategy()` (no-lookahead one-bar position shift,
+  `cost_bps` per position change, buy-and-hold benchmark, risk metrics on the
+  equity curve). Historical compute only — never a trade instruction.
+- `technicals.py` — investing.com-style technical-summary gauges for the web
+  charts (pure compute over the chart's own cached bars).
 
 ### interfaces/
 - `cli.py` — argparse CLI: `--models/--tokens/--smoke/--probe-websearch/--version`
@@ -152,6 +188,11 @@ tests/
   test_llm_backends.py     backend registry + Databricks adapter (SDK fully mocked)
   test_citations.py        web-search citations → Source models → memo web_sources
   test_risk.py             quant metrics (VaR/ES/vol/drawdown sign conventions)
+  test_strategy_backtest.py strategy engine (signals, no-lookahead equity math,
+                           costs, errors) + run_strategy_backtest tool + consultant subset
+  test_prompts.py          prompt library — frozen contract on every role, body selection,
+                           parameterized sharing, fallback chain, debate frozen bits,
+                           bull/bear pins, optional flags, planner optional-fallback
   test_roster.py           resolve_profile precedence, round-robin, family, pin, errors
   test_tools_format.py     tool schema/dispatch format
   test_openbb_tools.py     OpenBB tools — gating, schemas, summaries, agent loop (all mocked)
@@ -186,10 +227,16 @@ Run: `.venv\Scripts\python.exe -m pytest` (offline default).
 - `_salvage_fields` rescues truncated Gemini JSON before the plain-text fallback.
 - Cost weights are rough/unit-less, anchored to gpt-4o-mini≈0.2 (budgeting only).
 - `votes`/`veto` in firm.yaml are stored in `RoleSpec` but not enforced until M2.
-- System prompts (agent, librarian, synthesis) inject today's date at call time;
-  all three instruct the model to prefer tool results / web search / briefing over
-  training data, to state gaps explicitly, and to label unverifiable figures as
-  "unverified (training data)".
+  14 roles are `optional: true` (lean default roster of 13 core); the planner sees
+  optional roles annotated and its parse-failure fallback runs core only.
+- `bull_researcher`/`bear_researcher` carry explicit `model:` pins in firm.yaml
+  (gpt-5.5 / claude-4.8-opus — high-tier debate seats overriding every profile).
+- Analyst system prompts come from `core/prompts/` (`system_prompt_for(spec)`);
+  the JSON output contract in `prompts/base.py` is FROZEN (parsers in `agent.py`
+  depend on it). All prompts inject today's date at call time, instruct the model
+  to prefer tool results / web search / briefing over training data, to state
+  gaps explicitly, and to label unverifiable figures as "unverified (training
+  data)". CIO synthesis + librarian task prompts still live in `orchestrator.py`.
 - `Agent.run` passes `json_mode=True` on every `client.chat` call; `client.chat`
   applies `response_format={"type":"json_object"}` for GPT-family models only
   (family branching stays in `llm/`). budget/balanced WORKER tiers contain only

@@ -42,7 +42,7 @@ from .schemas import AnalystView, Memo, Source
 _log = logging.getLogger(__name__)
 from .tools import ToolRegistry, default_data_tools, default_openbb_tools
 
-# Candidate analysts the planner may choose from (all defined in firm.yaml).
+# Core candidate analysts the planner may choose from (all defined in firm.yaml).
 CANDIDATE_ANALYSTS = [
     "equity_analyst",
     "credit_analyst",
@@ -50,11 +50,19 @@ CANDIDATE_ANALYSTS = [
     "technical_analyst",
     "sentiment_analyst",
     "news_analyst",
-    "economist_short",
     "economist_medium",
-    "economist_long",
     "strategist",
     "market_risk",
+]
+# Optional specialists (optional: true in firm.yaml) — offered to the planner
+# annotated as optional, excluded from the parse-failure fallback.
+OPTIONAL_ANALYSTS = [
+    "economist_short",
+    "economist_long",
+    "fx_strategist",
+    "quant",
+    "credit_risk",
+    "liquidity_risk",
 ]
 LIBRARIAN_ROLE = "research_librarian"
 PLANNER_ROLE = "cio"
@@ -249,7 +257,9 @@ def run_committee(
 
     # --- choose analysts -------------------------------------------------
     candidate_specs = list(
-        resolve_roles(CANDIDATE_ANALYSTS, profile=profile_name).values()
+        resolve_roles(
+            CANDIDATE_ANALYSTS + OPTIONAL_ANALYSTS, profile=profile_name
+        ).values()
     )
     if simple:
         chosen = ["equity_analyst", "credit_analyst", "rates_analyst"]

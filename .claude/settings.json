@@ -1,4 +1,29 @@
 {
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(**)",
+      "Edit(**)",
+      "Write(**)",
+      "Bash(.venv/Scripts/python.exe -m pytest:*)",
+      "Bash(.venv/Scripts/python.exe -m pip:*)",
+      "Bash(.venv/Scripts/python.exe -m black:*)",
+      "Bash(.venv/Scripts/python.exe -m uvicorn:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Write(.env)",
+      "Bash(rm:*)",
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git commit:*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -8,6 +33,24 @@
             "type": "command",
             "command": ".venv/Scripts/python.exe -c \"import sys,json,os; d=json.load(sys.stdin); b=os.path.basename(d.get('tool_input',{}).get('file_path','')); (b=='.env' or (b.startswith('.env.') and b!='.env.example')) and print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Blocked: .env files contain API credentials'}}))\"",
             "statusMessage": "Checking for .env edit"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\wn686\\OneDrive - Deutsche B\u00f6rse AG\\Desktop\\REPOs\\investment-firm-agents\\.venv\\Scripts\\graphify.exe\" hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\wn686\\OneDrive - Deutsche B\u00f6rse AG\\Desktop\\REPOs\\investment-firm-agents\\.venv\\Scripts\\graphify.exe\" hook-guard read"
           }
         ]
       }

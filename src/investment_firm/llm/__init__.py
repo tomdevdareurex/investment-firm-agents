@@ -12,7 +12,14 @@ from .client import (
     stream_chat,
 )
 from .config import ConfigError, has_api_key
-from .costs import CallRecord, RunTracker, cost_weight, estimate_cost
+from .costs import (
+    CallRecord,
+    RunTracker,
+    cost_weight,
+    estimate_cost,
+    estimate_usd,
+    usd_price,
+)
 from .models import (
     CHAT_MODELS,
     CLAUDE_MODELS,
@@ -49,6 +56,8 @@ __all__ = [
     "RunTracker",
     "cost_weight",
     "estimate_cost",
+    "estimate_usd",
+    "usd_price",
     "CHAT_MODELS",
     "CLAUDE_MODELS",
     "GEMINI_MODELS",

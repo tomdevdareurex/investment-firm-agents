@@ -394,6 +394,34 @@ def test_run_tracker_summary_and_budget():
     assert "TOTAL" in tracker.render_summary()
 
 
+def test_estimate_usd_uses_input_output_prices():
+    # 1M input tokens on gpt-4o-mini at $0.15/1M input, $0 output here.
+    only_input = costs.estimate_usd("gpt-4o-mini", 1_000_000, 0)
+    assert only_input == pytest.approx(0.15, rel=1e-6)
+    # Output tokens are pricier than input for the same model.
+    out = costs.estimate_usd("gpt-4o-mini", 0, 1_000_000)
+    assert out > only_input
+    # Opus is far more expensive than a mini model for identical usage.
+    opus = costs.estimate_usd("claude-4.8-opus", 1000, 1000)
+    mini = costs.estimate_usd("gpt-4o-mini", 1000, 1000)
+    assert opus > mini > 0
+
+
+def test_unknown_model_usd_falls_back_by_family():
+    # Unlisted claude-family model uses the claude USD fallback (3/15 per 1M).
+    usd = costs.estimate_usd("claude-9.9-imaginary", 1_000_000, 0)
+    assert usd == pytest.approx(3.0, rel=1e-6)
+
+
+def test_render_summary_includes_usd_estimate():
+    tracker = costs.RunTracker()
+    tracker.record("market_risk", "claude-4.8-opus", 1000, 2000)
+    summary = tracker.render_summary()
+    assert "$~" in summary
+    assert "USD" in summary
+    assert tracker.total_usd > 0
+
+
 # --- web-search capability (offline, using a provided models payload) ------
 
 _MODELS_PAYLOAD = [

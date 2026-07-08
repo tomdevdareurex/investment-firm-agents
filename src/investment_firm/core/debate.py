@@ -32,49 +32,19 @@ from ..llm.utils import (
 )
 from . import errors, events
 from .agent import _extract_json_block
+from .prompts.debate import (
+    BEAR_LABEL,
+    BEAR_SYSTEM,
+    BULL_LABEL,
+    BULL_SYSTEM,
+    JUDGE_SYSTEM,
+)
 from .roster import RoleSpec
 from .schemas import AnalystView, DebateTurn
 
 # Rough output cap per debate turn; also used for the budget pre-check.
 _TURN_MAX_TOKENS = 500
 _JUDGE_MAX_TOKENS = 400
-
-# Canonical speaker titles — used in prompts, transcripts, and every UI surface.
-BULL_LABEL = "Senior Research Bull"
-BEAR_LABEL = "Senior Research Bear"
-
-_BULL_SYSTEM = (
-    "You are the Senior Research Bull at a buy-side investment firm. Decision-support "
-    "only — never advise executing orders. Build the strongest evidence-based "
-    "BULLISH case for the question using the analyst views and briefing. The "
-    "analyst views are labelled by role (e.g. [equity_analyst]) — reference "
-    "colleagues by role when you use their evidence or reasoning. Engage "
-    "directly with the bear's last argument and rebut it — argue, don't just list "
-    "data. Today's date is {date}. Prefer the provided evidence and tool results; "
-    "label anything you could not verify as 'unverified (training data)'. Keep it "
-    "to 2-4 tight paragraphs."
-)
-
-_BEAR_SYSTEM = (
-    "You are the Senior Research Bear at a buy-side investment firm. Decision-support "
-    "only — never advise executing orders. Build the strongest evidence-based "
-    "BEARISH case against the question using the analyst views and briefing. The "
-    "analyst views are labelled by role (e.g. [equity_analyst]) — reference "
-    "colleagues by role when you use their evidence or reasoning. Engage "
-    "directly with the bull's last argument and rebut it — argue, don't just list "
-    "data. Today's date is {date}. Prefer the provided evidence and tool results; "
-    "label anything you could not verify as 'unverified (training data)'. Keep it "
-    "to 2-4 tight paragraphs."
-)
-
-_JUDGE_SYSTEM = (
-    "You are the Research Manager and debate judge at a buy-side investment firm. "
-    "Decision-support only. Read the bull/bear debate and the analyst views, then "
-    "deliver a balanced verdict on which side is better supported. Today's date is "
-    "{date}. Respond with ONLY a JSON object (no prose, no code fences):\n"
-    '{{"stance": "BULLISH|BEARISH|NEUTRAL", "summary": "3-5 sentences on which '
-    'side won and why"}}'
-)
 
 
 @dataclasses.dataclass
@@ -172,7 +142,7 @@ def run_debate(
     for count in range(total_turns):
         is_bull = count % 2 == 0
         spec = bull_spec if is_bull else bear_spec
-        system = (_BULL_SYSTEM if is_bull else _BEAR_SYSTEM).format(date=date_str)
+        system = (BULL_SYSTEM if is_bull else BEAR_SYSTEM).format(date=date_str)
         label = BULL_LABEL if is_bull else BEAR_LABEL
         opponent = "bear" if is_bull else "bull"
         user = (
@@ -233,7 +203,7 @@ def _judge(
     if not history.strip():
         return "", "NEUTRAL"
     date_str = datetime.date.today().isoformat()
-    system = _JUDGE_SYSTEM.format(date=date_str)
+    system = JUDGE_SYSTEM.format(date=date_str)
     user = (
         f"Question: {question}\n\n"
         f"Analyst views:\n{views_text}\n\n"

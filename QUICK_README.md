@@ -11,12 +11,18 @@ any brokerage or order system, and its output is not investment advice.
 
 ## Install (Windows, AppLocker-safe)
 
+
+Full:
+.venv\Scripts\python.exe -m pip install -e ".[data,embed,api,databricks,openbb,dev]"
+```
+.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app --host 127.0.0.1 --port 8000
+
 AppLocker blocks `pip.exe` shims — always go through `python.exe -m`:
 
 ```bat
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[data,api,dev,databricks,openbb]"
-```
+
 
 Extras: `data` = yfinance/pandas (market data), `api` = FastAPI/uvicorn (web UI),
 `dev` = pytest/jupyter, `embed` = embeddings memory (M3, not needed yet),
