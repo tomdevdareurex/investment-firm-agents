@@ -209,7 +209,6 @@ def map_model(
     available: Optional[frozenset] = None,
 ) -> str:
     """Translate a logical (Playground-style) model name for the given/active backend.
-
     ``available`` is an optional set of live serving-endpoint names; when given,
     a transformed name that does not exist falls back to the default endpoint.
     """

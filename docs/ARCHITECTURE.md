@@ -13,14 +13,14 @@ config/firm.yaml
 llm/
   config.py      lazy env/.env accessors (no module constants)
       │
-  models.py      static model-name lists + family helpers
-      │
-  utils.py       format-agnostic parsing (OpenAI + Anthropic shapes)
-      │
-  costs.py       COST_WEIGHTS, estimate_cost, RunTracker
-      │
+  models.py      static model-name lists + family helpers +
+      │          Databricks serving-endpoint corpus
   backends.py    backend registry (playground | databricks), capabilities,
       │          per-backend model mapping
+  utils.py       format-agnostic parsing (OpenAI + Anthropic shapes)
+      │
+  costs.py       config/costs.yaml rate cards, backend-aware price_for,
+      │          estimate_cost, RunTracker
   client.py      raw httpx POST to /chat/completions (returns raw JSON);
       │          dispatches to databricks_backend when that backend is active
   databricks_backend.py   lazy OpenAI-compatible adapter via databricks-sdk
@@ -117,6 +117,39 @@ budget is exhausted the agent stops early and emits a fallback view rather
 than crashing. The web preview (`GET /api/preview`) reports
 `run_token_budget` without spending any tokens.
 
+### Cost tracking
+
+Rate cards live in `config/costs.yaml`, never in Python: a vendor ladder
+(`models` → `families` → `default`) plus a `databricks:` section keyed by
+serving-endpoint name. `price_for(model, *, backend=None)` returns a `Price`
+carrying three orthogonal provenance axes — do not conflate them:
+
+| field | answers | values |
+|---|---|---|
+| `source` | which YAML key matched | `model` / `family` / `default` |
+| `basis` | which rate table billed | `vendor` / `databricks` |
+| `confidence` | how the number was obtained | `list` / `published` / `vendor-proxy` / `estimated` |
+
+Only 14 of the 55 Databricks endpoints have a published rate; the rest are
+interpolated from the nearest published sibling and tagged accordingly, so an
+estimate is never displayed as a list price. Databricks entries carry
+`input`/`output` only — `weight` is a hand-tuned budgeting dial that is *not* a
+function of price, so it is inherited from the vendor entry for the logical
+name. A `Price` can therefore take USD from one table and weight from another.
+
+`price_for` is deliberately **uncached** so a mid-session backend switch from
+the web UI takes effect immediately, and it calls `map_model` without
+`available=` so pricing never touches the network or emits fallback warnings.
+`RunTracker` stores the basis, confidence, and active backend per call;
+`render_summary` marks fallback-priced models `*`, estimated `~`, and
+vendor-rate-on-Databricks `!` (an under-report, not a price).
+
+USD is tracked **per direction** (`cost_usd_input` / `cost_usd_output`, with
+`cost_usd` a derived property) because output bills at 4–6× input on every
+model — a run dominated by output cost and one dominated by prompt bloat look
+identical when aggregated yet call for opposite fixes. `cost_units` stays
+single: the weight applies identically to both directions.
+
 ---
 
 ## firm.yaml contract
@@ -203,9 +236,16 @@ candidate is validated against it; a miss falls back to
 `IFA_DBX_DEFAULT_MODEL` (default `databricks-claude-sonnet-4-6`) with a
 one-time warning.
 
-**Costs.** `costs.py` maps `databricks-*` names to family "other" (weight
-1.0), so tracking reports raw tokens with a unit-less weight — no crash, no
-fake pricing.
+**Costs.** Databricks bills its own DBU-derived rates, which diverge sharply
+from vendor list prices (`gemini-3.5-flash` is 0.3/2.5 published but
+1.875/11.25 on Databricks). So `price_for()` is backend-aware: while the
+Databricks backend is active it maps the logical name to an endpoint and
+consults the `databricks:` section of `config/costs.yaml` first, falling back
+to the vendor ladder. Calls record which table billed them (`basis`) and how
+trustworthy the number is (`confidence`) — see [Cost tracking](#cost-tracking).
+A model with no Databricks endpoint (`gpt-4.1`, `kimi-k2.6`) falls through to
+vendor rates and is flagged, since that is a known under-report rather than a
+real price.
 
 ---
 

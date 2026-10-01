@@ -406,6 +406,48 @@ class TestGetRunById:
         assert "cost_summary" in data["result"]
         assert data["result"]["cost_summary"]
 
+    def test_done_result_has_structured_costs(self, client):
+        post = client.post("/api/runs", json={"question": "Cost payload?"})
+        run_id = post.json()["run_id"]
+        result = _wait_for_done(client, run_id)["result"]
+        # Fake tracker: two gpt-4o-mini calls (500+200, 400+180 tokens).
+        assert result["total_tokens"] == 1280
+        assert result["total_input_tokens"] == 900
+        assert result["total_output_tokens"] == 380
+        assert result["token_budget"] == 60000
+        assert result["cost_usd_estimate"] > 0
+        assert result["cost_usd_input_estimate"] > 0
+        assert result["cost_usd_output_estimate"] > 0
+        assert result["cost_usd_input_estimate"] + result[
+            "cost_usd_output_estimate"
+        ] == pytest.approx(result["cost_usd_estimate"], abs=1e-4)
+        by_model = result["cost_by_model"]
+        assert len(by_model) == 1
+        assert by_model[0]["model"] == "gpt-4o-mini"
+        assert by_model[0]["calls"] == 2
+        assert by_model[0]["cost_usd_input"] + by_model[0][
+            "cost_usd_output"
+        ] == pytest.approx(by_model[0]["cost_usd"], abs=1e-6)
+        assert by_model[0]["price_source"] == "model"
+        assert by_model[0]["price_basis"] == "vendor"
+        assert by_model[0]["price_confidence"] == "list"
+        assert result["cost_unpriced_models"] == []
+        assert result["cost_estimated_models"] == []
+        assert result["cost_vendor_priced_models"] == []
+        for rec in result["call_records"]:
+            assert "cost_usd" in rec and rec["cost_usd"] > 0
+            assert rec["cost_usd_input"] > 0
+            assert rec["cost_usd_output"] > 0
+            assert rec["cost_usd_input"] + rec["cost_usd_output"] == pytest.approx(
+                rec["cost_usd"], abs=1e-6
+            )
+            assert rec["price_source"] == "model"
+            assert rec["price_basis"] == "vendor"
+            assert rec["price_confidence"] == "list"
+            assert rec["backend"] == "playground"
+        assert not any("fallback pricing" in w for w in result["warnings"])
+        assert not any("no published rate" in w for w in result["warnings"])
+
     def test_done_response_has_disclaimer(self, client):
         post = client.post("/api/runs", json={"question": "EM credit?"})
         run_id = post.json()["run_id"]

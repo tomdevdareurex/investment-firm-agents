@@ -516,11 +516,173 @@ function renderCostsTab(result) {
     panel.appendChild(warnBox);
   }
 
-  panel.appendChild(el('h3', 'section-title', 'Cost Summary'));
+  const byModel = Array.isArray(result.cost_by_model) ? result.cost_by_model : null;
+  const calls = Array.isArray(result.call_records) ? result.call_records : [];
+
+  // Structured view (needs the cost_by_model payload; older results fall through).
+  if (byModel) {
+    const headline = el('div', 'cost-headline');
+    const budget = Number(result.token_budget || 0);
+    const tokensText = budget > 0
+      ? `${fmtInt(result.total_tokens)} / ${fmtInt(budget)}`
+      : fmtInt(result.total_tokens);
+    [
+      [
+        'Estimated cost',
+        fmtUsd(result.cost_usd_estimate),
+        'cost-headline-usd',
+        `in ${fmtUsd(result.cost_usd_input_estimate)} \u00b7 out ${fmtUsd(result.cost_usd_output_estimate)}`,
+      ],
+      [
+        'Tokens',
+        tokensText,
+        '',
+        `in ${fmtInt(result.total_input_tokens)} \u00b7 out ${fmtInt(result.total_output_tokens)}`,
+      ],
+      ['cost~ (unit-less)', Number(result.cost_units_total || 0).toFixed(2)],
+      ['LLM calls', String(calls.length)],
+    ].forEach(([label, value, cls, sub]) => {
+      const item = el('div', 'cost-headline-item');
+      item.appendChild(el('span', 'cost-headline-label', label));
+      item.appendChild(el('span', `cost-headline-value ${cls || ''}`.trim(), value));
+      if (sub) item.appendChild(el('span', 'cost-headline-sub', sub));
+      headline.appendChild(item);
+    });
+    panel.appendChild(headline);
+
+    panel.appendChild(el('h3', 'section-title', 'By model'));
+    panel.appendChild(costTable(
+      ['Model', 'Calls', 'Tok in', 'Tok out', 'cost~', 'USD in', 'USD out', 'USD tot', 'Pricing', 'Rate'],
+      byModel.map((m) => [
+        el('span', 'model-name', m.model),
+        fmtInt(m.calls),
+        fmtInt(m.input_tokens),
+        fmtInt(m.output_tokens),
+        Number(m.cost_units || 0).toFixed(2),
+        fmtUsd(m.cost_usd_input),
+        fmtUsd(m.cost_usd_output),
+        fmtUsd(m.cost_usd),
+        priceSourceBadge(m.price_source),
+        priceRateBadge(m.price_basis, m.price_confidence),
+      ]),
+      [0, 8, 9],
+    ));
+
+    if (calls.length > 0) {
+      panel.appendChild(el('h3', 'section-title', 'Per call'));
+      panel.appendChild(costTable(
+        ['Agent', 'Model', 'Tok in', 'Tok out', 'cost~', 'USD in', 'USD out', 'USD tot', 'Latency'],
+        calls.map((r) => [
+          r.agent,
+          el('span', 'model-name', r.model),
+          fmtInt(r.input_tokens),
+          fmtInt(r.output_tokens),
+          Number(r.cost_units || 0).toFixed(2),
+          fmtUsd(r.cost_usd_input),
+          fmtUsd(r.cost_usd_output),
+          fmtUsd(r.cost_usd),
+          `${Number(r.latency_s || 0).toFixed(1)}s`,
+        ]),
+        [0, 1],
+      ));
+    }
+
+    panel.appendChild(el(
+      'p',
+      'cost-note',
+      'USD figures come from config/costs.yaml and are backend-aware: a Databricks ' +
+        'run is costed from the Databricks rate card, a Playground run from vendor ' +
+        'list prices. Output tokens bill at 4-6x the input rate, so USD in and USD ' +
+        'out are tracked separately — a run can spend more on a few hundred output ' +
+        'tokens than on a large prompt. Long-context tiers are not modelled, so a ' +
+        'long-context run costs more than shown. cost~ is a unit-less weight used ' +
+        'for budget guards.'
+    ));
+  }
+
+  // Plain-text summary (always available; collapsed when the tables are shown).
+  const details = document.createElement('details');
+  details.className = 'cost-details';
+  if (!byModel) details.open = true;
+  const summary = document.createElement('summary');
+  summary.textContent = 'Text summary';
+  details.appendChild(summary);
   const pre = document.createElement('pre');
   pre.className = 'cost-pre';
   pre.textContent = result.cost_summary || '(none)';
-  panel.appendChild(pre);
+  details.appendChild(pre);
+  panel.appendChild(details);
+}
+
+function fmtInt(v) {
+  return Number(v || 0).toLocaleString();
+}
+
+function fmtUsd(v) {
+  return `$${Number(v || 0).toFixed(4)}`;
+}
+
+function priceSourceBadge(source) {
+  const span = document.createElement('span');
+  if (source === 'model') {
+    span.className = 'badge badge--price-ok';
+    span.textContent = 'listed';
+    span.title = 'Priced from an explicit entry in config/costs.yaml';
+  } else {
+    span.className = 'badge badge--price-fallback';
+    span.textContent = `${source || 'unknown'} fallback`;
+    span.title = 'Model not listed in config/costs.yaml — estimate uses a fallback price';
+  }
+  return span;
+}
+
+// Which rate table the USD came from, and how trustworthy the number is.
+// Orthogonal to priceSourceBadge, which reports which YAML key matched.
+function priceRateBadge(basis, confidence) {
+  const span = document.createElement('span');
+  if (basis === 'databricks') {
+    if (confidence === 'published') {
+      span.className = 'badge badge--price-ok';
+      span.textContent = 'dbx rate';
+      span.title = 'Databricks published DBU rate';
+    } else {
+      span.className = 'badge badge--price-est';
+      span.textContent = 'dbx est';
+      span.title = confidence === 'vendor-proxy'
+        ? 'No Databricks rate — the vendor list price is used as a proxy'
+        : 'No Databricks rate — estimated from the nearest published sibling';
+    }
+  } else {
+    span.className = 'badge badge--price-ok';
+    span.textContent = 'list';
+    span.title = 'Vendor public list price';
+  }
+  return span;
+}
+
+// Build a table; cells may be strings or DOM nodes. `textCols` are left-aligned,
+// everything else is numeric (right-aligned). Never uses innerHTML.
+function costTable(headers, rows, textCols) {
+  const table = document.createElement('table');
+  table.className = 'roles-table cost-table';
+  const hrow = table.createTHead().insertRow();
+  headers.forEach((h, i) => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    if (!textCols.includes(i)) th.className = 'num';
+    hrow.appendChild(th);
+  });
+  const tbody = table.createTBody();
+  rows.forEach((cells) => {
+    const tr = tbody.insertRow();
+    cells.forEach((cell, i) => {
+      const td = tr.insertCell();
+      if (!textCols.includes(i)) td.className = 'num';
+      if (cell instanceof Node) td.appendChild(cell);
+      else td.textContent = String(cell);
+    });
+  });
+  return table;
 }
 
 function renderResults(result) {

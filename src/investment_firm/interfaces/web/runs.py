@@ -137,6 +137,22 @@ def _run_worker(
                 f"Token budget reached or exceeded: "
                 f"{tracker.total_tokens} / {tracker.token_budget} tokens used."
             )
+        for model_name in tracker.unpriced_models():
+            warnings.append(
+                f"Cost estimate for {model_name} uses family/default fallback pricing "
+                "— add the model to config/costs.yaml for an accurate figure."
+            )
+        for model_name in tracker.vendor_priced_models():
+            warnings.append(
+                f"{model_name} ran on Databricks but has no databricks: entry in "
+                "config/costs.yaml — costed at vendor list rates, which Databricks "
+                "does not bill."
+            )
+        for model_name in tracker.estimated_models():
+            warnings.append(
+                f"Databricks has no published rate for {model_name} — its cost is "
+                "estimated from the nearest published sibling."
+            )
 
         # Per-call cost records as structured list
         call_records = [
@@ -147,6 +163,13 @@ def _run_worker(
                 "output_tokens": r.output_tokens,
                 "total_tokens": r.total_tokens,
                 "cost_units": round(r.cost_units, 4),
+                "cost_usd_input": round(r.cost_usd_input, 6),
+                "cost_usd_output": round(r.cost_usd_output, 6),
+                "cost_usd": round(r.cost_usd, 6),
+                "price_source": r.price_source,
+                "price_basis": r.price_basis,
+                "price_confidence": r.price_confidence,
+                "backend": r.backend,
                 "latency_s": round(r.latency_s, 3),
             }
             for r in tracker.records
@@ -185,6 +208,17 @@ def _run_worker(
             "debate_judge_model": memo.debate_judge_model,
             "cost_summary": tracker.render_summary(),
             "cost_usd_estimate": round(tracker.total_usd, 4),
+            "cost_usd_input_estimate": round(tracker.total_usd_input, 4),
+            "cost_usd_output_estimate": round(tracker.total_usd_output, 4),
+            "cost_units_total": round(tracker.total_cost, 4),
+            "total_tokens": tracker.total_tokens,
+            "total_input_tokens": tracker.total_input_tokens,
+            "total_output_tokens": tracker.total_output_tokens,
+            "token_budget": tracker.token_budget,
+            "cost_by_model": tracker.by_model(),
+            "cost_unpriced_models": tracker.unpriced_models(),
+            "cost_estimated_models": tracker.estimated_models(),
+            "cost_vendor_priced_models": tracker.vendor_priced_models(),
             "call_records": call_records,
             "warnings": warnings,
             "disclaimer": investment_firm.DISCLAIMER,

@@ -68,7 +68,16 @@
       "Bash(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001__TRACKED_VAR__)",
       "Bash(curl -s \"http://127.0.0.1:8001/api/market/price-history?ticker=SPY&period=1y&interval=1d&technicals=true&indicators=close_10_ema,close_200_sma,boll,boll_ub,boll_lb,rsi,macd,macds,macdh\")",
       "Bash(curl -s \"http://127.0.0.1:8001/api/market/price-history?ticker=MSFT&period=6mo&interval=1d&technicals=true\")",
-      "Bash(curl -s -o /tmp/inv.json -w \"invalid-> %{http_code}\\\\n\" \"http://127.0.0.1:8001/api/market/price-history?ticker=ZZZZXXXX&period=1y&interval=1d&technicals=true\")"
+      "Bash(curl -s -o /tmp/inv.json -w \"invalid-> %{http_code}\\\\n\" \"http://127.0.0.1:8001/api/market/price-history?ticker=ZZZZXXXX&period=1y&interval=1d&technicals=true\")",
+      "Read(//c/Users/wn686/**)",
+      "Bash(grep -E \"^\\\\[\" ~/.databrickscfg)",
+      "Bash(grep -oE \"^[A-Z_]+\" .env)",
+      "Bash(grep -i databricks .env.example)",
+      "Bash(grep -v \"^$\")",
+      "Bash(curl -s http://127.0.0.1:8765/api/health)",
+      "mcp__playwright__browser_navigate",
+      "Bash(curl -s -X POST http://127.0.0.1:8765/api/runs -H 'Content-Type: application/json' -d '{\"question\":\"costs tab check\",\"simple\":true}')",
+      "Bash(graphify update *)"
     ]
   }
 }

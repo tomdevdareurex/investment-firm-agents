@@ -159,6 +159,29 @@ def test_map_model_default_env_override(monkeypatch):
     )
 
 
+def test_every_in_scope_endpoint_passes_through_map_model():
+    """Endpoint names are already backend-native — mapping must be the identity."""
+    from investment_firm.llm.models import DATABRICKS_CHAT_ENDPOINTS
+
+    for endpoint in DATABRICKS_CHAT_ENDPOINTS:
+        assert backends.map_model(endpoint, backend="databricks") == endpoint
+
+
+def test_known_unmappable_logical_models():
+    """Pin the gap so it cannot silently widen.
+
+    These names are used in firm.yaml tiers but have no Databricks endpoint, so at
+    call time ``map_model`` substitutes IFA_DBX_DEFAULT_MODEL and the seat runs a
+    different model than requested. ``gemini-3.1-pro-preview`` is a spelling
+    mismatch — ``databricks-gemini-3-1-pro`` exists.
+    """
+    from investment_firm.llm.models import DATABRICKS_ENDPOINTS
+
+    live = frozenset(DATABRICKS_ENDPOINTS)
+    for model in ("gpt-4.1", "gpt-4.1-mini", "gemini-3.1-pro-preview", "kimi-k2.6"):
+        assert backends.map_model(model, backend="databricks") not in live
+
+
 # --- client.chat dispatch ---------------------------------------------------
 
 

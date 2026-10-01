@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-firm-agents"
-version = "0.1.0"
+version = "0.2.0"
 description = "A buy-side investment firm simulated as a team of orchestrated LLM agents (decision-support only)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -58,6 +58,10 @@ investment-firm = "investment_firm.interfaces.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# firm.yaml + costs.yaml are loaded at runtime via Path(__file__); ship them in wheels too.
+investment_firm = ["config/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

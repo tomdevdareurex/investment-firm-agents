@@ -1,0 +1,185 @@
+# Investment-firm-agents LLM cost configuration (companion to firm.yaml).
+#
+# Each model carries three figures:
+#   input / output  APPROXIMATE public list prices in `currency` per `usd_per_tokens`
+#                   tokens. Budgeting only — may differ from actual DBAG Playground /
+#                   Databricks billing. Output tokens are usually several times pricier.
+#   weight          Unit-less relative cost per `weight_per_tokens` tokens, anchored to
+#                   gpt-4o-mini ~= 0.2. Drives the `cost~` column and budget guards.
+#
+# Lookup order (llm/costs.py): `databricks.models` (only while that backend is active)
+# -> exact model name -> `families` (by name prefix) -> `default`. A model priced via
+# `families`/`default` is flagged in the cost summary and the web UI so a wrong price is
+# never reported silently — add the model here to clear the flag.
+# Keys under `models` are Playground model names; a leading `databricks-` prefix is
+# stripped first. Keys under `databricks.models` are serving-endpoint names, same strip.
+# Edit freely — no code changes needed. Override the file with IFA_COSTS_CONFIG=<path>.
+
+currency: USD
+usd_per_tokens: 1000000      # input/output prices are per this many tokens
+weight_per_tokens: 1000      # weights are per this many tokens
+
+models:
+  # --- GPT / OpenAI -----------------------------------------------------------
+  gpt-5.5:                 {input: 5.0,   output: 15.0,  weight: 6.0}
+  gpt-5.4:                 {input: 3.0,   output: 12.0,  weight: 4.0}
+  gpt-5.4-mini:            {input: 0.5,   output: 1.5,   weight: 0.5}
+  gpt-5-mini:              {input: 0.4,   output: 1.2,   weight: 0.3}
+  gpt-5-nano:              {input: 0.1,   output: 0.4,   weight: 0.1}
+  gpt-4o-mini:             {input: 0.15,  output: 0.60,  weight: 0.2}   # anchor
+  gpt-4.1:                 {input: 2.0,   output: 8.0,   weight: 1.5}
+  gpt-4.1-mini:            {input: 0.4,   output: 1.6,   weight: 0.3}
+  gpt-4.1-nano:            {input: 0.1,   output: 0.4,   weight: 0.1}
+  o4-mini:                 {input: 1.1,   output: 4.4,   weight: 0.5}
+
+  # --- Gemini -------------------------------------------------------------------
+  gemini-3.5-flash:        {input: 0.3,   output: 2.5,   weight: 0.3}
+  gemini-3.1-pro-preview:  {input: 1.25,  output: 10.0,  weight: 3.0}
+  gemini-3-flash-preview:  {input: 0.3,   output: 2.5,   weight: 0.3}
+  gemini-2.5-flash:        {input: 0.30,  output: 2.50,  weight: 0.2}
+  gemini-2.5-pro:          {input: 1.25,  output: 10.0,  weight: 1.5}
+
+  # --- Claude -------------------------------------------------------------------
+  claude-4.8-opus:         {input: 15.0,  output: 75.0,  weight: 12.0}
+  claude-4.7-opus:         {input: 15.0,  output: 75.0,  weight: 10.0}
+  claude-4.6-opus:         {input: 15.0,  output: 75.0,  weight: 9.0}
+  claude-4.6-sonnet:       {input: 3.0,   output: 15.0,  weight: 2.5}
+  claude-4.5-opus:         {input: 15.0,  output: 75.0,  weight: 8.0}
+  claude-4.5-sonnet:       {input: 3.0,   output: 15.0,  weight: 2.0}
+  claude-4.5-haiku:        {input: 1.0,   output: 5.0,   weight: 0.5}
+
+  # --- Other --------------------------------------------------------------------
+  kimi-k2.6:               {input: 0.6,   output: 2.5,   weight: 0.4}
+
+  # --- Embeddings (input-priced only) -------------------------------------------
+  text-embedding-3-small:  {input: 0.02,  output: 0.0,   weight: 0.02}
+  text-embedding-3-large:  {input: 0.13,  output: 0.0,   weight: 0.13}
+  text-embedding-005:      {input: 0.02,  output: 0.0,   weight: 0.02}
+  text-embedding-ada-002:  {input: 0.10,  output: 0.0,   weight: 0.10}
+
+# Fallback by family (llm/models.py `family()`: claude | gpt | gemini | other) when a
+# model is not listed above. Flagged as "family fallback" in summaries.
+families:
+  claude:                  {input: 3.0,   output: 15.0,  weight: 2.0}
+  gpt:                     {input: 2.0,   output: 8.0,   weight: 1.0}
+  gemini:                  {input: 0.5,   output: 4.0,   weight: 1.0}
+  other:                   {input: 1.0,   output: 4.0,   weight: 1.0}
+
+# Last resort when neither the model nor its family is listed.
+default:                   {input: 1.0,   output: 4.0,   weight: 1.0}
+
+# ==============================================================================
+# Databricks model serving rate card
+# ==============================================================================
+# Consulted FIRST, and only while the `databricks` backend is active. The logical
+# model name is mapped to its serving endpoint (llm/backends.map_model), the
+# `databricks-` prefix is stripped, and the result is looked up in `models` below.
+# A miss falls through to the vendor ladder above — so a run on Databricks priced
+# at Playground rates is visible, not silent.
+#
+# Databricks bills from DBUs, not vendor list price, and the two diverge sharply
+# (gemini-3-5-flash: 0.3/2.5 on the Playground vs 1.875/11.25 here). Entries carry
+# no `weight`: that stays a hand-tuned budgeting dial and is inherited from the
+# vendor entry for the logical name. Add an explicit `weight:` to override.
+#
+# `src` records how the number was obtained — surfaced as `confidence` on the
+# resolved Price and badged in the web UI:
+#   published     from the DBU rate card, converted at the $0.07/DBU list rate
+#   vendor-proxy  no Databricks rate; the vendor's own list price is the best guess
+#   estimated     no Databricks rate; taken from the nearest published sibling in
+#                 the same family and tier (see the tier anchors in each section)
+#
+# CAVEAT: long-context tiers are NOT modelled. Astra/Sol/Terra/Luna and Gemini 3.1
+# Pro roughly double past their context threshold, so a long-context run costs more
+# than reported here.
+#
+# Drift guard: tests/test_costs_config.py asserts this block covers exactly
+# llm/models.DATABRICKS_ENDPOINTS. Workspace-custom endpoints (mv_*, agents_prod_*)
+# are out of scope and keep the family fallback.
+
+databricks:
+  # Mechanical-transform output -> real endpoint, where a Playground name is spelled
+  # differently on Databricks. Only for endpoints that EXIST — gpt-4.1, gpt-4.1-mini,
+  # gpt-4o-mini, o4-mini, kimi-k2.6 and text-embedding-* have no Databricks equivalent
+  # and deliberately get no alias, so they fall through to vendor pricing and are flagged.
+  aliases:
+    gemini-3-1-pro-preview: gemini-3-1-pro
+
+  models:
+    # --- Claude ---------------------------------------------------------------
+    # Tier anchors: opus = claude-opus-5 (5/25), sonnet = claude-sonnet-5 (2/10),
+    # haiku = 1/3 of sonnet (the vendor haiku:sonnet ratio). `fable` is an unlisted
+    # Claude variant — priced at the sonnet tier.
+    claude-fable-5:                {input: 2.0,    output: 10.0,   src: estimated}
+    claude-fable-5-1:              {input: 2.0,    output: 10.0,   src: estimated}
+    claude-haiku-4-5:              {input: 0.67,   output: 3.33,   src: estimated}
+    claude-opus-4-1:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-opus-4-5:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-opus-4-6:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-opus-4-7:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-opus-4-8:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-opus-5:                 {input: 5.0,    output: 25.0,   src: published}
+    claude-opus-5-5:               {input: 5.0,    output: 25.0,   src: estimated}
+    claude-sonnet-4:               {input: 2.0,    output: 10.0,   src: estimated}
+    claude-sonnet-4-5:             {input: 2.0,    output: 10.0,   src: estimated}
+    claude-sonnet-4-6:             {input: 2.0,    output: 10.0,   src: estimated}
+    claude-sonnet-5:               {input: 2.0,    output: 10.0,   src: published}
+    claude-sonnet-5-5:             {input: 2.0,    output: 10.0,   src: estimated}
+
+    # --- Gemini ---------------------------------------------------------------
+    # Tier anchors: flash = gemini-3-5-flash (1.875/11.25, the higher of the two
+    # published flash rates — conservative for budgeting), flash-lite = 1/3 of flash,
+    # pro = 5/25. Image endpoints are priced at their text tier.
+    gemini-2-5-flash:              {input: 1.875,  output: 11.25,  src: estimated}
+    gemini-2-5-pro:                {input: 5.0,    output: 25.0,   src: estimated}
+    gemini-3-1-flash-image:        {input: 1.875,  output: 11.25,  src: estimated}
+    gemini-3-1-flash-lite:         {input: 0.6,    output: 3.75,   src: estimated}
+    gemini-3-1-pro:                {input: 5.0,    output: 25.0,   src: estimated}
+    gemini-3-5-flash:              {input: 1.875,  output: 11.25,  src: published}
+    gemini-3-5-flash-lite:         {input: 0.6,    output: 3.75,   src: estimated}
+    gemini-3-6-flash:              {input: 1.875,  output: 11.25,  src: estimated}
+    gemini-3-7-flash:              {input: 1.875,  output: 11.25,  src: estimated}
+    gemini-3-8-flash:              {input: 0.75,   output: 3.75,   src: published}
+    gemini-3-flash:                {input: 1.875,  output: 11.25,  src: estimated}
+    gemini-3-pro-image:            {input: 5.0,    output: 25.0,   src: estimated}
+
+    # --- GPT ------------------------------------------------------------------
+    # Tier anchors (all published): astra/pro = 10/50, sol = 4/20, terra = 2/12,
+    # luna = 0.2/1.2, mini = 0.75/4.5, nano = 0.2/1.25. Unsuffixed gpt-5.x sits at
+    # the terra tier. Codex is priced as its base model.
+    gpt-5:                         {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-1:                       {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-2:                       {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-3-codex:                 {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-4:                       {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-4-mini:                  {input: 0.75,   output: 4.5,    src: published}
+    gpt-5-4-nano:                  {input: 0.2,    output: 1.25,   src: published}
+    gpt-5-5:                       {input: 2.0,    output: 12.0,   src: estimated}
+    gpt-5-5-pro:                   {input: 10.0,   output: 50.0,   src: estimated}
+    gpt-5-6-luna:                  {input: 0.2,    output: 1.2,    src: published}
+    gpt-5-6-sol:                   {input: 4.0,    output: 20.0,   src: published}
+    gpt-5-6-terra:                 {input: 2.0,    output: 12.0,   src: published}
+    gpt-5-mini:                    {input: 0.75,   output: 4.5,    src: estimated}
+    gpt-5-nano:                    {input: 0.2,    output: 1.25,   src: estimated}
+    gpt-6-1-sol:                   {input: 4.0,    output: 20.0,   src: estimated}
+    gpt-6-astra:                   {input: 10.0,   output: 50.0,   src: published}
+    gpt-6-luna:                    {input: 0.2,    output: 1.2,    src: estimated}
+    gpt-6-sol:                     {input: 4.0,    output: 20.0,   src: estimated}
+    gpt-oss-120b:                  {input: 0.15,   output: 0.6,    src: published}
+    gpt-oss-20b:                   {input: 0.07,   output: 0.3,    src: published}
+
+    # --- Other ----------------------------------------------------------------
+    # Grok and GLM have no Databricks rate — the vendor list price is the best guess.
+    # `inkling` is a Databricks-internal model with no public price; it is placed in
+    # the open-weight band alongside the llama/gemma entries.
+    gemma-3-12b:                   {input: 0.15,   output: 0.5,    src: published}
+    glm-5-3:                       {input: 0.6,    output: 2.2,    src: vendor-proxy}
+    grok-4-6:                      {input: 3.0,    output: 15.0,   src: vendor-proxy}
+    grok-4-7:                      {input: 3.0,    output: 15.0,   src: vendor-proxy}
+    inkling:                       {input: 0.5,    output: 1.5,    src: estimated}
+    meta-llama-3-3-70b-instruct:   {input: 0.5,    output: 1.5,    src: published}
+
+    # --- Embeddings (input-priced only) ---------------------------------------
+    # No published DBU rate; placed at the open-weight embedding band.
+    gte-large-en:                  {input: 0.1,    output: 0.0,    src: estimated}
+    mxbai-embed-de-large-v1:       {input: 0.1,    output: 0.0,    src: estimated}

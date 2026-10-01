@@ -48,6 +48,81 @@ EMBEDDING_MODELS = [
 
 CHAT_MODELS = CLAUDE_MODELS + GEMINI_MODELS + GPT_MODELS + OTHER_MODELS
 
+# --- Databricks serving endpoints ------------------------------------------
+#
+# Foundation-model endpoints on the DBAG workspace (verified live 2026-09-30).
+# These are *endpoint* names, not Playground model names — the spelling differs
+# (Claude variant/version swapped, dots → dashes); see ``backends._transform_databricks``.
+# Used as the drift corpus for the ``databricks:`` rate card in ``config/costs.yaml``.
+#
+# Workspace-custom endpoints (``mv_*``, ``agents_prod_*``) are deliberately NOT
+# listed: they are user-provisioned, churn independently of the foundation catalog,
+# and are priced by the family fallback.
+
+DATABRICKS_CHAT_ENDPOINTS = [
+    "databricks-claude-fable-5",
+    "databricks-claude-fable-5-1",
+    "databricks-claude-haiku-4-5",
+    "databricks-claude-opus-4-1",
+    "databricks-claude-opus-4-5",
+    "databricks-claude-opus-4-6",
+    "databricks-claude-opus-4-7",
+    "databricks-claude-opus-4-8",
+    "databricks-claude-opus-5",
+    "databricks-claude-opus-5-5",
+    "databricks-claude-sonnet-4",
+    "databricks-claude-sonnet-4-5",
+    "databricks-claude-sonnet-4-6",
+    "databricks-claude-sonnet-5",
+    "databricks-claude-sonnet-5-5",
+    "databricks-gemini-2-5-flash",
+    "databricks-gemini-2-5-pro",
+    "databricks-gemini-3-1-flash-image",
+    "databricks-gemini-3-1-flash-lite",
+    "databricks-gemini-3-1-pro",
+    "databricks-gemini-3-5-flash",
+    "databricks-gemini-3-5-flash-lite",
+    "databricks-gemini-3-6-flash",
+    "databricks-gemini-3-7-flash",
+    "databricks-gemini-3-8-flash",
+    "databricks-gemini-3-flash",
+    "databricks-gemini-3-pro-image",
+    "databricks-gemma-3-12b",
+    "databricks-glm-5-3",
+    "databricks-gpt-5",
+    "databricks-gpt-5-1",
+    "databricks-gpt-5-2",
+    "databricks-gpt-5-3-codex",
+    "databricks-gpt-5-4",
+    "databricks-gpt-5-4-mini",
+    "databricks-gpt-5-4-nano",
+    "databricks-gpt-5-5",
+    "databricks-gpt-5-5-pro",
+    "databricks-gpt-5-6-luna",
+    "databricks-gpt-5-6-sol",
+    "databricks-gpt-5-6-terra",
+    "databricks-gpt-5-mini",
+    "databricks-gpt-5-nano",
+    "databricks-gpt-6-1-sol",
+    "databricks-gpt-6-astra",
+    "databricks-gpt-6-luna",
+    "databricks-gpt-6-sol",
+    "databricks-gpt-oss-120b",
+    "databricks-gpt-oss-20b",
+    "databricks-grok-4-6",
+    "databricks-grok-4-7",
+    "databricks-inkling",
+    "databricks-meta-llama-3-3-70b-instruct",
+]
+
+# Note ``mxbai-embed-de-large-v1`` carries no ``databricks-`` prefix.
+DATABRICKS_EMBEDDING_ENDPOINTS = [
+    "databricks-gte-large-en",
+    "mxbai-embed-de-large-v1",
+]
+
+DATABRICKS_ENDPOINTS = DATABRICKS_CHAT_ENDPOINTS + DATABRICKS_EMBEDDING_ENDPOINTS
+
 # Cheap, broadly available default for quick experiments / smoke tests.
 DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
