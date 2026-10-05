@@ -105,8 +105,13 @@ def extract_text(resp: object, strict: bool = True) -> str:
         if isinstance(content, str):
             return content
         if isinstance(content, list):  # some providers return content parts
+            # Keep only answer-text parts; reasoning/summary parts (e.g. Databricks
+            # GPT-5) must never be surfaced as the answer.
             return "".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") in (None, "text", "output_text")
             )
         if content is None:
             return ""
@@ -126,6 +131,31 @@ def extract_text(resp: object, strict: bool = True) -> str:
             + ", ".join(sorted(resp.keys()))
         )
     return ""
+
+
+def finish_reason(resp: object) -> Optional[str]:
+    """Return the normalised stop reason of a completion, or ``None``.
+
+    OpenAI shape: ``choices[0].finish_reason`` (``stop``/``length``/``tool_calls``).
+    Anthropic shape: top-level ``stop_reason``; ``max_tokens`` maps to ``length``
+    so callers can test truncation uniformly.
+    """
+    if not isinstance(resp, dict):
+        return None
+    choices = resp.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if isinstance(reason, str):
+            return reason
+    reason = resp.get("stop_reason")
+    if isinstance(reason, str):
+        return "length" if reason == "max_tokens" else reason
+    return None
+
+
+def is_truncated(resp: object) -> bool:
+    """True if the completion stopped because it hit its output-token cap."""
+    return finish_reason(resp) == "length"
 
 
 def extract_tool_calls(resp: dict) -> list:

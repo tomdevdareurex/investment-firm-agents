@@ -132,8 +132,8 @@ def test_debate_prompts_frozen_bits():
 @pytest.mark.parametrize("profile", ["budget", "balanced", "premium"])
 def test_bull_bear_model_pins(profile):
     specs = resolve_roles(["bull_researcher", "bear_researcher"], profile=profile)
-    assert specs["bull_researcher"].model == "gpt-5.5"
-    assert specs["bear_researcher"].model == "claude-4.8-opus"
+    assert specs["bull_researcher"].model == "gpt-5.6-terra"
+    assert specs["bear_researcher"].model == "claude-5.5-opus"
 
 
 def test_optional_flags():

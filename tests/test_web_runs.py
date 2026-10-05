@@ -103,7 +103,13 @@ def _make_tracker() -> RunTracker:
 
 
 def _fake_run_committee(
-    question, *, profile=None, simple=False, tracker=None, on_event=None
+    question,
+    *,
+    profile=None,
+    simple=False,
+    tracker=None,
+    on_event=None,
+    horizon="short",
 ) -> Tuple[Memo, RunTracker]:
     from investment_firm.core import events
 
@@ -125,7 +131,13 @@ def _fake_run_committee(
 
 
 def _fake_run_committee_error(
-    question, *, profile=None, simple=False, tracker=None, on_event=None
+    question,
+    *,
+    profile=None,
+    simple=False,
+    tracker=None,
+    on_event=None,
+    horizon="short",
 ):
     raise RuntimeError("Simulated orchestrator failure")
 
@@ -365,7 +377,13 @@ class TestGetRunById:
         from investment_firm.core import errors as core_errors
 
         def _fake_error_run(
-            question, *, profile=None, simple=False, tracker=None, on_event=None
+            question,
+            *,
+            profile=None,
+            simple=False,
+            tracker=None,
+            on_event=None,
+            horizon="short",
         ):
             memo = _make_memo(question=question, profile=profile or "balanced")
             memo.views.append(

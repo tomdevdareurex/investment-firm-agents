@@ -1,0 +1,35 @@
+# Investment-firm-agents external endpoints. Every URL the code calls lives here.
+#
+# Templates use str.format placeholders, e.g. {series}; the caller supplies the fields.
+# All values must be https. Override the whole file with IFA_ENDPOINTS_CONFIG=<path>.
+# AI_PLAYGROUND_BASE_URL (env) still wins over `llm.playground_base`.
+
+data:
+  ecb:             "https://data-api.ecb.europa.eu/service/data/{series}"
+  worldbank:       "https://api.worldbank.org/v2/country/{country}/indicator/{indicator}"
+  edgar:           "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{concept}.json"
+  fred:            "https://fred.stlouisfed.org/graph/fredgraph.csv"
+  stocktwits:      "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
+  alphavantage:    "https://www.alphavantage.co/query"
+  reddit_token:    "https://www.reddit.com/api/v1/access_token"
+  reddit_search:   "https://oauth.reddit.com/r/{subreddit}/search"
+
+prediction_markets:
+  # Primary: real-money, CFTC-regulated exchange. Keyless public market data.
+  kalshi_series:   "https://external-api.kalshi.com/trade-api/v2/series"
+  kalshi_events:   "https://external-api.kalshi.com/trade-api/v2/events"
+  # Fallback: play-money market (weaker signal), used only when Kalshi finds nothing.
+  manifold_search: "https://api.manifold.markets/v0/search-markets"
+
+# Kalshi series categories searched for macro-relevant markets (exact, case-sensitive).
+kalshi:
+  categories: [Economics, Financials, Commodities, Politics, World]
+  max_series: 3          # series queried per call
+  max_markets: 5         # markets returned per call (further capped by the tool's limit)
+
+docs:
+  alphavantage_key: "https://www.alphavantage.co/support/#api-key"
+  reddit_apps:      "https://www.reddit.com/prefs/apps"
+
+llm:
+  playground_base: "https://devportal.deutsche-boerse.de/api"

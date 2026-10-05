@@ -107,8 +107,14 @@ class Memo(BaseModel):
 
     question: str
     profile: str = ""
+    horizon: str = Field(default="", description="short|medium|long")
     recommendation: Recommendation = "HOLD"
     summary: str = ""
+    headline: str = ""
+    key_reasons: List[str] = Field(default_factory=list)
+    main_risks: List[str] = Field(default_factory=list)
+    what_to_watch: List[str] = Field(default_factory=list)
+    confidence: int = Field(default=0, ge=0, le=5)
     views: List[AnalystView] = Field(default_factory=list)
     briefing: str = ""
     briefing_role: str = Field(
@@ -167,6 +173,8 @@ class Memo(BaseModel):
         lines.append(f"Question: {self.question}")
         if self.profile:
             lines.append(f"Profile:  {self.profile}")
+        if self.horizon:
+            lines.append(f"Horizon:  {self.horizon}")
         lines.append("")
         attribution = (
             f" — {self.synth_role.upper()} ({self.synth_model})"
@@ -179,9 +187,24 @@ class Memo(BaseModel):
             )
         else:
             lines.append(f"RECOMMENDATION: {self.recommendation}{attribution}")
+        if self.headline:
+            lines.append(f"Headline: {self.headline.strip()}")
         lines.append("")
         lines.append("Summary:")
         lines.append(f"  {self.summary.strip()}")
+        for title, items in (
+            ("Why:", self.key_reasons),
+            ("What could go wrong:", self.main_risks),
+            ("What to watch:", self.what_to_watch),
+        ):
+            clean = _clean_display_list(items)
+            if clean:
+                lines.append("")
+                lines.append(title)
+                lines.extend(f"  - {item}" for item in clean)
+        if self.confidence > 0:
+            lines.append("")
+            lines.append(f"Confidence: {self.confidence}/5")
         lines.append("")
         lines.append("-" * 72)
         lines.append("Analyst views:")

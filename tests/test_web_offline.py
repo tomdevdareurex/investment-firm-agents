@@ -145,3 +145,10 @@ class TestIndex:
         assert "Investment" in text or "IC Agents" in text
         # The preview form must be present
         assert "preview" in text.lower() or "Preview" in text
+
+    def test_html_contains_new_controls(self, client):
+        text = client.get("/").text
+        assert 'id="btn-download-report"' in text
+        assert 'id="horizon-group"' in text
+        assert 'id="btn-portfolio"' in text
+        assert "/static/memo.js" in text

@@ -18,7 +18,7 @@ from investment_firm.llm.models import DATABRICKS_ENDPOINTS
 def _fresh_cache(monkeypatch):
     """Never let a test's override or backend switch leak into the next one."""
     monkeypatch.delenv("IFA_COSTS_CONFIG", raising=False)
-    monkeypatch.delenv("IFA_LLM_BACKEND", raising=False)
+    monkeypatch.setenv("IFA_LLM_BACKEND", "playground")
     backends.reset_backend()
     costs.reload_costs()
     yield

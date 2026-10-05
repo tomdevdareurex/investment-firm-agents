@@ -1,0 +1,178 @@
+/* Horizon selector, plain-language memo and portfolio panel (kept out of app.css). */
+
+/* ── Horizon radio group ── */
+fieldset.field {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+  margin: 0 0 var(--space-md);
+}
+
+fieldset.field legend {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 var(--space-xs);
+}
+
+.field--horizon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-lg);
+  align-items: center;
+}
+
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--color-text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  transition: border-color var(--duration) var(--ease),
+              background var(--duration) var(--ease);
+}
+
+.radio-label:hover { border-color: var(--color-accent-dim); }
+
+.radio-label:has(input:checked) {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+.radio-label input[type="radio"] { accent-color: var(--color-accent); }
+
+.radio-label:focus-within {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* ── Portfolio controls ── */
+.portfolio-controls .field-row { flex-wrap: wrap; align-items: flex-end; }
+.portfolio-controls .checkbox-label { margin-right: var(--space-md); }
+
+.portfolio-controls input[type="text"],
+.portfolio-controls input[type="number"],
+.portfolio-controls input[type="file"] {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  padding: var(--space-xs) var(--space-sm);
+  width: 100%;
+}
+
+.field-help {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: var(--space-sm) 0 0;
+}
+
+.field-help code { font-family: var(--font-mono); font-size: 0.78rem; }
+
+/* ── Plain-language memo ── */
+.badge--horizon {
+  background: color-mix(in srgb, var(--color-accent) 22%, var(--color-surface));
+  color: var(--color-text);
+  margin-left: var(--space-sm);
+}
+
+.confidence-dots {
+  color: var(--color-accent);
+  letter-spacing: 3px;
+  font-size: 0.95rem;
+  margin-left: var(--space-xs);
+}
+
+.memo-rec-plain {
+  color: var(--color-text-muted);
+  margin: var(--space-xs) 0 var(--space-md);
+}
+
+.memo-headline {
+  font-size: 1.25rem;
+  line-height: 1.35;
+  margin: var(--space-md) 0;
+  color: var(--color-text);
+}
+
+.memo-section { margin-top: var(--space-md); }
+
+.memo-list {
+  margin: var(--space-xs) 0 0 var(--space-lg);
+  padding: 0;
+  line-height: 1.55;
+}
+
+.memo-list li { margin-bottom: var(--space-xs); }
+
+.memo-glossary {
+  margin-top: var(--space-lg);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-sm);
+}
+
+.memo-glossary summary { cursor: pointer; color: var(--color-text-muted); }
+.glossary-list dt { font-weight: 600; margin-top: var(--space-sm); }
+.glossary-list dd { margin: 2px 0 0; color: var(--color-text-muted); }
+
+.stance-plain {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+#btn-download-report { text-decoration: none; margin-left: auto; }
+
+/* ── Portfolio panel ── */
+#portfolio-panel .btn { text-decoration: none; }
+
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.stat-card:first-child,
+.stat-card:nth-child(4) {
+  border-color: var(--color-accent-dim);
+}
+
+.stat-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.stat-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.portfolio-chart {
+  height: 260px;
+  margin-bottom: var(--space-md);
+}
+
+.portfolio-disclaimer { margin-top: var(--space-md); }

@@ -84,7 +84,7 @@ one is active. Useful when the Playground monthly token quota is exhausted.
 .venv\Scripts\python.exe -m pip install -e ".[databricks]"
 databricks auth login --host https://<your-workspace-host>   # OAuth / CLI profile, no PATs
 
-$env:IFA_LLM_BACKEND = "databricks"    # default: playground
+$env:IFA_LLM_BACKEND = "databricks"    # default: databricks ("playground" needs Playground-served models in firm.yaml)
 investment-firm "Is AAPL fairly valued?" --simple
 ```
 
@@ -131,6 +131,63 @@ Results are shown in five tabs:
 Runs respect `--profile` and `--simple` (passed via the UI controls) and the
 `IFA_CALL_PAUSE` env variable slows inter-call pacing to stay under
 tokens-per-minute limits.
+
+### Investment horizon
+
+The **Investment horizon** radio next to the question (short / medium / long)
+does two things:
+
+- It re-targets the Market Charts panel: short = `1y` of daily bars, medium =
+  full history in weekly bars, long = full history in monthly bars. You can still
+  change the period/interval selects afterwards.
+- It is sent with **Run** and appended to the question every agent sees
+  ("Investment horizon: Long term (3+ years) … prefer monthly data …"), so the
+  analysts, debate and CIO frame their views for that horizon. The memo shows the
+  horizon as a badge.
+
+CLI: `investment-firm "<question>" --horizon long` (default `short`).
+
+### Download the HTML report
+
+When a run finishes, **Download report (HTML)** appears next to the result
+header (`GET /api/runs/{id}/report.html`). From the CLI use
+`--report PATH`, e.g. `investment-firm "<question>" --report ic-report.html`.
+
+The report contains every tab: the plain-language memo (headline, summary, why,
+what could go wrong, what to watch, confidence), each specialist's view, the
+bull/bear debate, the research briefing, sources, warnings and costs, followed by
+a glossary of the jargon actually used and a "How the numbers are calculated"
+section. It is one self-contained file: inline CSS and SVG, **no scripts**, no
+remote assets, so it opens offline and prints cleanly.
+
+### Portfolio analytics
+
+Upload a portfolio under **Portfolio (optional)** in the question form and click
+**Analyse portfolio — backtest + risk (free)**. Accepted formats (max 50
+positions, 100 KB):
+
+- CSV `ticker,weight` (fractions or percent) or `ticker,quantity[,price]` — see
+  [docs/examples/portfolio_sample.csv](docs/examples/portfolio_sample.csv);
+  `,` or `;` delimiters.
+- JSON `{"positions": [{"ticker": "SPY", "weight": 0.6}, …]}` or a bare list.
+
+Controls: history window (`auto` follows the horizon: 1y / 5y / max), benchmark
+(default `SPY`), rebalancing (none / monthly / daily), risk-free rate and which
+rule-based strategies to backtest.
+
+The analysis is **free (no tokens)**: prices come from the cached yfinance
+endpoint and everything is computed locally — total return, CAGR, volatility,
+historical/parametric VaR, Expected Shortfall, maximum drawdown with dates,
+Sharpe, Sortino, Calmar, beta / correlation / tracking error vs the benchmark,
+per-position contribution, concentration and correlations, buy-and-hold vs
+rebalanced comparison, and strategy overlays. A separate portfolio HTML report
+can be downloaded.
+
+**Ask for suggestions (spends tokens)** makes a single advisor LLM call
+(`IFA_ADVISOR_MODEL`, default `claude-5.5-opus`) over a compact digest of the
+analysis, optionally using the latest finished committee run as market context.
+It describes options and trade-offs only — decision-support, never an
+instruction to trade. Analyses live in memory and are lost on server restart.
 
 ### Market data cache
 

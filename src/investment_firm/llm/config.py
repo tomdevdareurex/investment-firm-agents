@@ -13,6 +13,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .. import endpoints
+
 _PLACEHOLDER = "paste-your-key-here"
 
 
@@ -79,12 +81,9 @@ def require_api_key() -> str:
 
 
 def base_url() -> str:
-    """Return the API base URL (no trailing slash)."""
-    return (
-        os.getenv("AI_PLAYGROUND_BASE_URL", "https://devportal.deutsche-boerse.de/api")
-        .strip()
-        .rstrip("/")
-    )
+    """Return the API base URL (no trailing slash); env wins over endpoints.yaml."""
+    configured = os.getenv("AI_PLAYGROUND_BASE_URL", "").strip()
+    return (configured or endpoints.url("llm.playground_base")).rstrip("/")
 
 
 def verify_ssl():
@@ -101,8 +100,8 @@ def timeout() -> float:
 
 
 def llm_backend() -> str:
-    """Return the configured LLM backend name (``IFA_LLM_BACKEND``, default playground)."""
-    return (os.getenv("IFA_LLM_BACKEND", "playground").strip() or "playground").lower()
+    """Return the configured LLM backend name (``IFA_LLM_BACKEND``, default databricks)."""
+    return (os.getenv("IFA_LLM_BACKEND", "databricks").strip() or "databricks").lower()
 
 
 def profile() -> str:
@@ -134,6 +133,22 @@ def call_pause() -> float:
         return max(0.0, float(os.getenv("IFA_CALL_PAUSE", "0")))
     except ValueError:
         return 0.0
+
+
+def dbx_max_retries() -> int:
+    """Max transient-failure retries on the Databricks backend (``IFA_DBX_MAX_RETRIES``, 4)."""
+    try:
+        return max(0, int(os.getenv("IFA_DBX_MAX_RETRIES", "4")))
+    except ValueError:
+        return 4
+
+
+def dbx_retry_budget() -> float:
+    """Total seconds of retry sleep allowed per Databricks call (``IFA_DBX_RETRY_BUDGET``, 90)."""
+    try:
+        return max(0.0, float(os.getenv("IFA_DBX_RETRY_BUDGET", "90")))
+    except ValueError:
+        return 90.0
 
 
 # Silence the per-request urllib3 warning that appears when verification is disabled

@@ -55,7 +55,7 @@ Auth is CLI-profile/OAuth only (env `DATABRICKS_HOST`/`DATABRICKS_TOKEN` →
 
 Switch backends either way:
 
-- **Env**: `set IFA_LLM_BACKEND=databricks` (default `playground`).
+- **Env**: `set IFA_LLM_BACKEND=playground` to use the Playground (default `databricks`; firm.yaml models are Databricks endpoints).
 - **Web UI**: the "LLM backend" dropdown in the run form
   (`GET/POST /api/backend`) — takes effect immediately for that server.
 

@@ -39,7 +39,7 @@ from .schemas import Memo
 from .tools import ToolRegistry, default_data_tools
 
 # Default high-reasoning model; override with IFA_CONSULTANT_MODEL.
-DEFAULT_CONSULTANT_MODEL = "claude-4.8-opus"
+DEFAULT_CONSULTANT_MODEL = "claude-5.5-opus"
 
 # The only tools the consultant may use — all read-only historical compute.
 CONSULTANT_TOOL_NAMES = frozenset(

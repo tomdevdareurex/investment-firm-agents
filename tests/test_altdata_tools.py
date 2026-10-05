@@ -1,4 +1,4 @@
-"""Offline tests for the alt-data vendor tools (FRED, Polymarket, StockTwits).
+"""Offline tests for the alt-data vendor tools (FRED, prediction markets, StockTwits).
 
 All HTTP is mocked via monkeypatching ``requests.get`` — no network, no tokens.
 """
@@ -15,10 +15,11 @@ from investment_firm.core.tools import datasources as ds
 
 
 class _Resp:
-    def __init__(self, status=200, text="", json_data=None):
+    def __init__(self, status=200, text="", json_data=None, headers=None):
         self.status_code = status
         self.text = text
         self._json = json_data
+        self.headers = headers or {}
 
     def json(self):
         if self._json is None:
@@ -55,29 +56,144 @@ class TestFred:
             ds.get_fred_series("DGS10")
 
 
-class TestPolymarket:
-    def test_parses_json_encoded_outcomes(self, monkeypatch):
-        market = {
-            "question": "Will the ECB cut rates in 2026?",
-            "outcomes": json.dumps(["Yes", "No"]),
-            "outcomePrices": json.dumps(["0.62", "0.38"]),
+_KALSHI_SERIES = {
+    "series": [
+        {
+            "ticker": "KXFED",
+            "title": "Fed rate decision",
+            "category": "Economics",
+            "categories": ["Economics"],
+            "tags": ["Fed", "Rates"],
+            "volume_fp": "900.00",
+        },
+        {
+            "ticker": "KXFEDMIN",
+            "title": "Fed minutes mentions",
+            "category": "Economics",
+            "categories": ["Economics"],
+            "tags": [],
+            "volume_fp": "5.00",
+        },
+        {
+            "ticker": "KXNBA",
+            "title": "NBA champion",
+            "category": "Sports",
+            "categories": ["Sports"],
+            "tags": ["Basketball"],
+            "volume_fp": "99999.00",
+        },
+    ]
+}
+
+_KALSHI_EVENTS = {
+    "events": [
+        {
+            "title": "Fed decision September",
+            "markets": [
+                {
+                    "ticker": "KXFED-SEP-CUT",
+                    "yes_sub_title": "Cut 25bps",
+                    "last_price_dollars": "0.6200",
+                },
+                {
+                    "ticker": "KXFED-SEP-HOLD",
+                    "yes_sub_title": "Hold",
+                    "last_price_dollars": "0.0000",
+                    "yes_bid_dollars": "0.3000",
+                    "yes_ask_dollars": "0.3400",
+                },
+                {"ticker": "KXFED-SEP-HIKE", "yes_sub_title": "Hike"},
+            ],
         }
-        _patch_get(monkeypatch, lambda url, **kw: _Resp(json_data=[market]))
-        out = ds.get_prediction_market_odds("ECB rate cut", limit=3)
-        assert out["query"] == "ECB rate cut"
-        assert out["markets"][0]["implied_odds_pct"] == {"Yes": 62.0, "No": 38.0}
-        assert "Polymarket" in out["source"]
+    ]
+}
+
+_MANIFOLD = [{"question": "Will the ECB cut rates?", "probability": 0.41}]
+
+
+def _venue_router(calls=None, *, kalshi_status=200, manifold=_MANIFOLD, events=None):
+    """Fake ``requests.get`` routing by URL; records each requested URL in ``calls``."""
+
+    def get(url, **kw):
+        if calls is not None:
+            calls.append(url)
+        if "manifold" in url:
+            return _Resp(json_data=manifold)
+        if kalshi_status != 200:
+            return _Resp(status=kalshi_status, headers={"server": "Zscaler/6.2"})
+        if url.endswith("/series"):
+            return _Resp(json_data=_KALSHI_SERIES)
+        return _Resp(json_data=_KALSHI_EVENTS if events is None else events)
+
+    return get
+
+
+@pytest.fixture(autouse=True)
+def _fresh_kalshi_cache():
+    ds._KALSHI_SERIES["rows"] = None
+    yield
+    ds._KALSHI_SERIES["rows"] = None
+
+
+class TestPredictionMarkets:
+    def test_kalshi_prices_and_source(self, monkeypatch):
+        _patch_get(monkeypatch, _venue_router())
+        out = ds.get_prediction_market_odds("Fed rate cut 2026", limit=5)
+        assert out["venue"] == "Kalshi"
+        assert "Kalshi" in out["source"]
+        by_label = {m["question"]: m["implied_odds_pct"] for m in out["markets"]}
+        assert by_label["Fed decision September — Cut 25bps"] == {
+            "Yes": 62.0,
+            "No": 38.0,
+        }
+        # No last trade -> bid/ask midpoint (0.30 + 0.34) / 2.
+        assert by_label["Fed decision September — Hold"]["Yes"] == 32.0
+        # Unpriced market is skipped.
+        assert len(out["markets"]) == 2
         assert out["as_of"]
 
-    def test_empty_result_raises(self, monkeypatch):
-        _patch_get(monkeypatch, lambda url, **kw: _Resp(json_data=[]))
-        with pytest.raises(ToolError):
-            ds.get_prediction_market_odds("nothing matches")
+    def test_limit_caps_markets(self, monkeypatch):
+        _patch_get(monkeypatch, _venue_router())
+        out = ds.get_prediction_market_odds("Fed rate", limit=1)
+        assert len(out["markets"]) == 1
+
+    def test_series_catalogue_is_fetched_once(self, monkeypatch):
+        calls: list = []
+        _patch_get(monkeypatch, _venue_router(calls))
+        ds.get_prediction_market_odds("Fed rate")
+        ds.get_prediction_market_odds("Fed rate")
+        assert sum(1 for u in calls if u.endswith("/series")) == 1
+
+    def test_unconfigured_category_is_not_searched(self, monkeypatch):
+        calls: list = []
+        _patch_get(monkeypatch, _venue_router(calls))
+        out = ds.get_prediction_market_odds("NBA champion")
+        # Sports is not a configured category -> no Kalshi match -> Manifold.
+        assert out["venue"] == "Manifold"
+        assert not any("/events" in u for u in calls)
+
+    def test_falls_back_to_manifold_on_zscaler_block(self, monkeypatch):
+        _patch_get(monkeypatch, _venue_router(kalshi_status=403))
+        out = ds.get_prediction_market_odds("ECB rate cut")
+        assert out["venue"] == "Manifold"
+        assert "play-money" in out["source"]
+        assert out["markets"][0]["implied_odds_pct"] == {"Yes": 41.0, "No": 59.0}
+
+    def test_both_venues_failing_names_each_failure(self, monkeypatch):
+        _patch_get(monkeypatch, _venue_router(kalshi_status=403, manifold=[]))
+        with pytest.raises(ToolError) as excinfo:
+            ds.get_prediction_market_odds("ECB rate cut")
+        text = str(excinfo.value)
+        assert "Kalshi" in text and "Zscaler" in text and "Manifold" in text
+
+    def test_query_without_keywords_raises(self, monkeypatch):
+        _patch_get(monkeypatch, _venue_router(manifold=[]))
+        with pytest.raises(ToolError, match="no searchable keywords"):
+            ds.get_prediction_market_odds("2026")
 
     def test_read_only_no_trade_keys(self, monkeypatch):
-        market = {"question": "Q", "outcomes": ["Yes"], "outcomePrices": [0.5]}
-        _patch_get(monkeypatch, lambda url, **kw: _Resp(json_data=[market]))
-        out = ds.get_prediction_market_odds("q")
+        _patch_get(monkeypatch, _venue_router())
+        out = ds.get_prediction_market_odds("Fed rate")
         # Decision-support only: the payload never exposes order/wallet fields.
         blob = json.dumps(out).lower()
         for banned in ("order", "wallet", "private_key", "signature"):

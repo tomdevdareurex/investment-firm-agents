@@ -314,6 +314,22 @@ def attach_indicators(payload: Dict[str, Any], names: Any) -> Dict[str, Any]:
     if not ohlc:
         return payload
 
+    from ...data.indicators import IndicatorError, overlay_series
+
+    times = [row["time"] for row in ohlc]
+    frame = ohlcv_frame(payload)
+    try:
+        overlays = overlay_series(frame, names, times)
+    except IndicatorError as exc:
+        raise MarketDataValidationError(str(exc)) from exc
+
+    result = dict(payload)
+    result["indicators"] = overlays
+    return result
+
+
+def ohlcv_frame(payload: Dict[str, Any]):
+    """Return a ``Date/Open/High/Low/Close/Volume`` DataFrame built from ``payload``."""
     try:
         import pandas as pd  # type: ignore
     except ImportError as exc:  # pragma: no cover - only without the data extra
@@ -322,11 +338,10 @@ def attach_indicators(payload: Dict[str, Any], names: Any) -> Dict[str, Any]:
             '.venv\\Scripts\\python.exe -m pip install -e ".[data,api]"'
         ) from exc
 
-    from ...data.indicators import IndicatorError, overlay_series
-
+    ohlc = payload.get("ohlc") or []
     times = [row["time"] for row in ohlc]
     volume_by_time = {v["time"]: v.get("value", 0) for v in payload.get("volume", [])}
-    frame = pd.DataFrame(
+    return pd.DataFrame(
         {
             "Date": times,
             "Open": [row["open"] for row in ohlc],
@@ -336,14 +351,6 @@ def attach_indicators(payload: Dict[str, Any], names: Any) -> Dict[str, Any]:
             "Volume": [volume_by_time.get(t, 0) for t in times],
         }
     )
-    try:
-        overlays = overlay_series(frame, names, times)
-    except IndicatorError as exc:
-        raise MarketDataValidationError(str(exc)) from exc
-
-    result = dict(payload)
-    result["indicators"] = overlays
-    return result
 
 
 def attach_technicals(payload: Dict[str, Any]) -> Dict[str, Any]:

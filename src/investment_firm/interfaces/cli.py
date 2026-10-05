@@ -13,6 +13,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Optional, Sequence
 
 from .. import DISCLAIMER, __version__
@@ -176,6 +177,8 @@ def cmd_run(
     simple: bool = False,
     stream: Optional[bool] = None,
     chat: bool = False,
+    horizon: str = "short",
+    report_path: Optional[str] = None,
 ) -> int:
     """Run the Investment Committee for a question and print the memo.
 
@@ -209,7 +212,11 @@ def cmd_run(
         )
     try:
         memo, tracker = run_committee(
-            question, profile=profile, simple=simple, on_event=on_event
+            question,
+            profile=profile,
+            simple=simple,
+            on_event=on_event,
+            horizon=horizon,
         )
     except RosterError as exc:
         print(f"[roster] {exc}", file=sys.stderr)
@@ -217,6 +224,18 @@ def cmd_run(
     print(memo.render())
     print()
     print(tracker.render_summary())
+    if report_path:
+        from .report import build_run_result, render_committee_report
+
+        html_text = render_committee_report(
+            build_run_result(memo, tracker, horizon=horizon)
+        )
+        try:
+            Path(report_path).write_text(html_text, encoding="utf-8")
+        except OSError as exc:
+            print(f"[report] could not write {report_path}: {exc}", file=sys.stderr)
+            return 1
+        print(f"[report] written to {report_path}")
     if chat:
         _consultant_repl(memo, collected)
     return 0
@@ -282,6 +301,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="after the memo, open a read-only consultant REPL scoped to the run",
     )
+    parser.add_argument(
+        "--horizon",
+        choices=["short", "medium", "long"],
+        default="short",
+        help="investment horizon framing for the committee",
+    )
+    parser.add_argument(
+        "--report",
+        metavar="PATH",
+        help="also write a self-contained HTML report of the run to PATH",
+    )
     parser.add_argument("--version", action="store_true", help="print version and exit")
     parser.add_argument("--models", action="store_true", help="list models (no tokens)")
     parser.add_argument(
@@ -322,6 +352,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 simple=args.simple,
                 stream=args.stream,
                 chat=args.chat,
+                horizon=args.horizon,
+                report_path=args.report,
             )
     except config.ConfigError as exc:
         print(f"[config] {exc}", file=sys.stderr)

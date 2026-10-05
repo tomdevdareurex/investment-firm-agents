@@ -233,8 +233,20 @@ def test_chat_keeps_generous_gemini_max_tokens(monkeypatch):
     assert payload["max_tokens"] == 8000
 
 
+def test_chat_floors_gpt5_max_tokens_against_reasoning(monkeypatch):
+    # GPT-5 reasoning tokens share the output budget; a 500-token debate cap
+    # would otherwise return empty text — the client floors it.
+    payload = _capture(
+        monkeypatch,
+        model="gpt-5.6-terra",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=500,
+    )
+    assert payload["max_tokens"] == 4096
+
+
 def test_chat_does_not_floor_gpt_max_tokens(monkeypatch):
-    # The floor is Gemini-only; other families keep the requested cap verbatim.
+    # The floor is reasoning-model-only; non-reasoning GPT (4o/4.x) keeps the cap.
     payload = _capture(
         monkeypatch,
         model="gpt-4o-mini",

@@ -107,13 +107,15 @@ def run_strategy(
     *,
     cost_bps: float = 0.0,
     level: float = 0.99,
+    return_curve: bool = False,
 ) -> Dict[str, object]:
     """Backtest ``strategy`` long/flat on ``df`` closes; return raw fractions.
 
     ``cost_bps`` is deducted from the strategy return on every position change
     (one side per change). Risk metrics are computed on the strategy's equity
     curve via :func:`investment_firm.data.risk.risk_summary`; a buy-and-hold
-    benchmark over the same window is included for comparison.
+    benchmark over the same window is included for comparison. With
+    ``return_curve=True`` the full ``equity`` curve and its ``dates`` are added.
     """
     if strategy not in STRATEGIES:
         raise BacktestError(
@@ -150,7 +152,7 @@ def run_strategy(
     benchmark_total = closes[-1] / closes[0] - 1.0 if closes[0] else 0.0
     summary = risk_summary(equity, level=level)
 
-    return {
+    out: Dict[str, object] = {
         "strategy": strategy,
         "rule": STRATEGIES[strategy],
         "n_obs": len(rets),
@@ -171,3 +173,10 @@ def run_strategy(
         "es_1d": summary["es_1d"],
         "var_level": summary["var_level"],
     }
+    if return_curve:
+        out["equity"] = [round(v, 6) for v in equity]
+        if "Date" in df.columns:
+            out["dates"] = [str(v)[:10] for v in df["Date"].tolist()]
+        else:
+            out["dates"] = [str(i) for i in range(len(df))]
+    return out

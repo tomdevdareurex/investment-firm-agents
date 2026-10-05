@@ -12,7 +12,7 @@ from investment_firm.llm import backends, client, databricks_backend, sanitize
 
 @pytest.fixture(autouse=True)
 def _clean_backend_state(monkeypatch):
-    monkeypatch.delenv("IFA_LLM_BACKEND", raising=False)
+    monkeypatch.setenv("IFA_LLM_BACKEND", "playground")
     monkeypatch.delenv("IFA_DBX_MODEL_MAP", raising=False)
     monkeypatch.delenv("IFA_DBX_DEFAULT_MODEL", raising=False)
     # Never let the adapter reach the network in offline tests.
@@ -25,8 +25,9 @@ def _clean_backend_state(monkeypatch):
 # --- backend selection ------------------------------------------------------
 
 
-def test_default_backend_is_playground():
-    assert backends.current_backend() == backends.PLAYGROUND
+def test_default_backend_is_databricks(monkeypatch):
+    monkeypatch.delenv("IFA_LLM_BACKEND", raising=False)
+    assert backends.current_backend() == backends.DATABRICKS
 
 
 def test_env_selects_databricks(monkeypatch):
@@ -261,6 +262,25 @@ def test_databricks_chat_maps_model_name(monkeypatch):
     monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
     databricks_backend.chat("claude-4.6-opus", [{"role": "user", "content": "hi"}])
     assert fake.calls[0]["model"] == "databricks-claude-opus-4-6"
+
+
+def test_databricks_chat_floors_reasoning_max_tokens(monkeypatch):
+    fake = _FakeOpenAIClient()
+    monkeypatch.setattr(databricks_backend, "_openai_client", lambda: fake)
+    msgs = [{"role": "user", "content": "hi"}]
+    databricks_backend.chat("gpt-5.6-terra", msgs, max_tokens=500)
+    assert fake.calls[0]["max_tokens"] == 4096
+    databricks_backend.chat("claude-4.5-haiku", msgs, max_tokens=123)
+    assert fake.calls[1]["max_tokens"] == 123
+
+
+def test_is_reasoning_model_classification():
+    from investment_firm.llm.models import is_reasoning_model
+
+    for model in ("gpt-5.5", "gpt-5.6-terra", "databricks-gpt-5-4", "o4-mini"):
+        assert is_reasoning_model(model) is True, model
+    for model in ("gpt-4.1", "claude-5.5-opus"):
+        assert is_reasoning_model(model) is False, model
 
 
 def test_databricks_chat_ignores_web_search(monkeypatch):

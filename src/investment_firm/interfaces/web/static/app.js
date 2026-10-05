@@ -125,6 +125,11 @@ function formatElapsed(startMs) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 }
 
+function selectedHorizon() {
+  const r = document.querySelector('input[name="horizon"]:checked');
+  return r ? r.value : 'short';
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────
 
 async function loadHealth() {
@@ -245,6 +250,7 @@ function renderPreviewResult(data) {
   const modeLabel = data.simple ? 'simple (3 fixed analysts)' : 'full agentic';
 
   [[`Profile`, data.profile], [`Mode`, modeLabel],
+   [`Horizon`, data.horizon_label || data.horizon || 'short'],
    [`Token budget`, budget], [`Roles`, String(data.roles.length)]].forEach(([k, v]) => {
     const span = document.createElement('span');
     span.textContent = `${k}: `;
@@ -268,7 +274,7 @@ async function runPreview(e) {
   const profile  = document.getElementById('profile').value;
   const simple   = document.getElementById('simple').checked;
 
-  const url = `/api/preview?question=${encodeURIComponent(question)}&profile=${encodeURIComponent(profile)}&simple=${simple}`;
+  const url = `/api/preview?question=${encodeURIComponent(question)}&profile=${encodeURIComponent(profile)}&simple=${simple}&horizon=${encodeURIComponent(selectedHorizon())}`;
 
   try {
     const data = await fetchJson(url);
@@ -302,29 +308,7 @@ function showStatusBar(text, cls) {
 }
 
 // ── Results rendering ─────────────────────────────────────────────────────
-
-function renderMemoTab(result) {
-  const panel = document.getElementById('tab-memo');
-  panel.textContent = '';
-
-  const header = el('div', 'memo-header');
-  header.appendChild(el('span', 'memo-label', 'Recommendation: '));
-  header.appendChild(recBadge(result.recommendation));
-  panel.appendChild(header);
-
-  if (result.synth_role) {
-    const model = result.synth_model ? ` (${result.synth_model})` : '';
-    const attribution = `Final recommendation issued by ${result.synth_role.toUpperCase()}${model}`;
-    panel.appendChild(el('p', 'memo-attribution', attribution));
-  }
-
-  panel.appendChild(el('h3', 'section-title', 'Summary'));
-  panel.appendChild(textBlock(result.summary, 'memo-summary'));
-
-  if (result.question) {
-    panel.appendChild(el('p', 'memo-question', `Question: ${result.question}`));
-  }
-}
+// renderMemoTab() lives in memo.js (keeps this file under the size cap).
 
 function renderReasoningTab(result) {
   const panel = document.getElementById('tab-reasoning');
@@ -342,7 +326,9 @@ function renderReasoningTab(result) {
     const header = el('div', 'analyst-header');
     header.appendChild(el('span', 'analyst-role', view.role));
     header.appendChild(stanceBadge(view.stance));
-    const convSpan = el('span', 'conviction-badge', `Conviction ${view.conviction}/5`);
+    const plain = (result.stance_plain || {})[view.stance];
+    if (plain) header.appendChild(el('span', 'stance-plain', plain));
+    const convSpan = el('span', 'conviction-badge', `Confidence ${view.conviction}/5`);
     header.appendChild(convSpan);
     if (view.grounded === false) {
       const badge = el('span', 'badge badge--avoid', 'UNGROUNDED');
@@ -713,7 +699,7 @@ function renderConsultantTab(result) {
   modelInput.type = 'text';
   modelInput.id = 'consultant-model';
   modelInput.className = 'consultant-model';
-  modelInput.placeholder = 'model (default claude-4.8-opus)';
+  modelInput.placeholder = 'model (default claude-5.5-opus)';
   controls.appendChild(modelInput);
   panel.appendChild(controls);
 
@@ -771,7 +757,7 @@ function renderConsultantTab(result) {
 // ── Tab switching ─────────────────────────────────────────────────────────
 
 function initTabs() {
-  const buttons = document.querySelectorAll('.tab-btn');
+  const buttons = document.querySelectorAll('#results-panel .tab-btn');
   buttons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const target = btn.dataset.tab;
@@ -779,7 +765,7 @@ function initTabs() {
         b.classList.toggle('tab-btn--active', b.dataset.tab === target);
         b.setAttribute('aria-selected', b.dataset.tab === target ? 'true' : 'false');
       });
-      document.querySelectorAll('.tab-panel').forEach((panel) => {
+      document.querySelectorAll('#results-panel .tab-panel').forEach((panel) => {
         const isTarget = panel.id === `tab-${target}`;
         panel.classList.toggle('tab-panel--active', isTarget);
         panel.hidden = !isTarget;
@@ -897,6 +883,11 @@ async function pollRun(runId) {
       showStatusBar(`Done${elapsed}`, 'status-done');
       if (data.result) {
         renderResults(data.result);
+        const dl = document.getElementById('btn-download-report');
+        if (dl) {
+          dl.href = data.result.report_url || `/api/runs/${runId}/report.html`;
+          dl.hidden = false;
+        }
         // Switch to Memo tab
         document.querySelector('[data-tab="memo"]').click();
       }
@@ -938,6 +929,8 @@ async function startRun() {
   const simple  = document.getElementById('simple').checked;
 
   setRunBtnState(true);
+  const dl = document.getElementById('btn-download-report');
+  if (dl) dl.hidden = true;
 
   // Show and reset results panel
   const panel = document.getElementById('results-panel');
@@ -945,12 +938,12 @@ async function startRun() {
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // Reset tabs to Memo
-  document.querySelectorAll('.tab-btn').forEach((b) => {
+  document.querySelectorAll('#results-panel .tab-btn').forEach((b) => {
     const isMemo = b.dataset.tab === 'memo';
     b.classList.toggle('tab-btn--active', isMemo);
     b.setAttribute('aria-selected', isMemo ? 'true' : 'false');
   });
-  document.querySelectorAll('.tab-panel').forEach((p) => {
+  document.querySelectorAll('#results-panel .tab-panel').forEach((p) => {
     const isMemo = p.id === 'tab-memo';
     p.classList.toggle('tab-panel--active', isMemo);
     p.hidden = !isMemo;
@@ -964,7 +957,7 @@ async function startRun() {
     const data = await fetchJson('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, profile: profile || null, simple }),
+      body: JSON.stringify({ question, profile: profile || null, simple, horizon: selectedHorizon() }),
     });
 
     const runId = data.run_id;
@@ -998,4 +991,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const btnRun = document.getElementById('btn-run');
   if (btnRun) btnRun.addEventListener('click', startRun);
+
+  document.querySelectorAll('input[name="horizon"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      document.dispatchEvent(
+        new CustomEvent('ifa:horizon', { detail: { horizon: selectedHorizon() } })
+      );
+    });
+  });
 });

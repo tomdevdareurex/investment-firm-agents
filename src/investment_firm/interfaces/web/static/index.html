@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Investment Committee — IC Agents</title>
   <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/extras.css" />
 </head>
 <body>
   <header>
@@ -32,6 +33,66 @@
             placeholder="e.g. Should we increase duration in the EUR rates book given the macro backdrop?"
           ></textarea>
         </div>
+
+        <fieldset class="field field--horizon" id="horizon-group">
+          <legend>Investment horizon</legend>
+          <label class="radio-label"><input type="radio" name="horizon" value="short" checked /> <span>Short term (≤ 1 year)</span></label>
+          <label class="radio-label"><input type="radio" name="horizon" value="medium" /> <span>Medium term (1–3 years)</span></label>
+          <label class="radio-label"><input type="radio" name="horizon" value="long" /> <span>Long term (3+ years)</span></label>
+        </fieldset>
+
+        <fieldset class="field portfolio-controls" id="portfolio-controls">
+          <legend>Portfolio (optional)</legend>
+          <div class="field-row">
+            <div class="field">
+              <label for="portfolio-file">Portfolio file</label>
+              <input type="file" id="portfolio-file" accept=".csv,.json,text/csv,application/json" />
+            </div>
+            <div class="field">
+              <label for="portfolio-period">History</label>
+              <select id="portfolio-period">
+                <option value="auto" selected>auto (horizon)</option>
+                <option value="6mo">6mo</option>
+                <option value="1y">1y</option>
+                <option value="2y">2y</option>
+                <option value="5y">5y</option>
+                <option value="10y">10y</option>
+                <option value="max">max</option>
+              </select>
+            </div>
+            <div class="field field--ticker">
+              <label for="portfolio-benchmark">Benchmark</label>
+              <input type="text" id="portfolio-benchmark" value="SPY" maxlength="24" pattern="[A-Za-z0-9.^=_-]+" />
+            </div>
+            <div class="field">
+              <label for="portfolio-rebalance">Rebalancing</label>
+              <select id="portfolio-rebalance">
+                <option value="none" selected>none (buy-and-hold)</option>
+                <option value="monthly">monthly</option>
+                <option value="daily">daily</option>
+              </select>
+            </div>
+            <div class="field field--ticker">
+              <label for="portfolio-rf">Risk-free % / yr</label>
+              <input type="number" id="portfolio-rf" value="0" step="0.25" min="-5" max="25" />
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="checkbox-label"><input type="checkbox" name="portfolio-strategy" value="sma_crossover" checked /> <span>SMA crossover</span></label>
+            <label class="checkbox-label"><input type="checkbox" name="portfolio-strategy" value="macd_crossover" checked /> <span>MACD crossover</span></label>
+            <label class="checkbox-label"><input type="checkbox" name="portfolio-strategy" value="rsi_reversion" checked /> <span>RSI reversion</span></label>
+            <label class="checkbox-label"><input type="checkbox" name="portfolio-strategy" value="bollinger_reversion" checked /> <span>Bollinger reversion</span></label>
+          </div>
+          <p class="field-help" id="portfolio-help">
+            CSV <code>ticker,weight</code> (or <code>ticker,quantity</code>) or JSON — see
+            docs/examples/portfolio_sample.csv. <span id="portfolio-period-hint">auto = 1y for short term.</span>
+          </p>
+          <div class="actions">
+            <button type="button" id="btn-portfolio" class="btn btn--primary">
+              Analyse portfolio — backtest + risk (free)
+            </button>
+          </div>
+        </fieldset>
 
         <div class="field-row">
           <div class="field">
@@ -174,10 +235,37 @@
       <div id="chart-technicals" class="chart-technicals" aria-label="Technical summary"></div>
     </section>
 
+    <!-- Portfolio analytics panel — hidden until an analysis completes -->
+    <section id="portfolio-panel" class="card" aria-labelledby="portfolio-heading" hidden>
+      <div class="results-header">
+        <h2 id="portfolio-heading">Portfolio Analytics</h2>
+        <span class="badge badge--research">Decision-support only</span>
+      </div>
+      <div id="portfolio-status" class="run-status-bar" role="status" aria-live="polite"></div>
+      <div class="actions">
+        <a id="btn-portfolio-report" class="btn" hidden download>Download portfolio report (HTML)</a>
+        <button type="button" id="btn-portfolio-suggest" class="btn btn--run" hidden>Ask for suggestions (spends tokens)</button>
+      </div>
+      <nav class="tab-bar" role="tablist" aria-label="Portfolio tabs">
+        <button class="tab-btn tab-btn--active" role="tab" data-ptab="overview"   aria-selected="true"  aria-controls="ptab-overview">Overview</button>
+        <button class="tab-btn"                 role="tab" data-ptab="positions"  aria-selected="false" aria-controls="ptab-positions">Positions</button>
+        <button class="tab-btn"                 role="tab" data-ptab="backtests"  aria-selected="false" aria-controls="ptab-backtests">Backtests</button>
+        <button class="tab-btn"                 role="tab" data-ptab="charts"     aria-selected="false" aria-controls="ptab-charts">Charts</button>
+        <button class="tab-btn"                 role="tab" data-ptab="suggestion" aria-selected="false" aria-controls="ptab-suggestion">Suggestion</button>
+      </nav>
+      <div id="ptab-overview"   class="tab-panel tab-panel--active" role="tabpanel"></div>
+      <div id="ptab-positions"  class="tab-panel" role="tabpanel" hidden></div>
+      <div id="ptab-backtests"  class="tab-panel" role="tabpanel" hidden></div>
+      <div id="ptab-charts"     class="tab-panel" role="tabpanel" hidden></div>
+      <div id="ptab-suggestion" class="tab-panel" role="tabpanel" hidden></div>
+      <p class="disclaimer portfolio-disclaimer" id="portfolio-disclaimer"></p>
+    </section>
+
     <!-- Results panel — hidden until a run completes -->
     <section id="results-panel" class="card results-card" aria-labelledby="results-heading" hidden>
       <div class="results-header">
         <h2 id="results-heading">Committee Result</h2>
+        <a id="btn-download-report" class="btn btn--primary" hidden download>Download report (HTML)</a>
         <div id="run-status-bar" class="run-status-bar" aria-live="polite"></div>
       </div>
 
@@ -206,7 +294,9 @@
   </footer>
 
   <script src="/static/app.js"></script>
+  <script src="/static/memo.js"></script>
   <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
   <script src="/static/charts.js"></script>
+  <script src="/static/portfolio.js"></script>
 </body>
 </html>

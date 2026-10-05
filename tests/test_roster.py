@@ -265,6 +265,24 @@ class TestRealFirm:
             workers = firm["profiles"][profile]["WORKER"]
             assert not any(m.startswith("gpt") for m in workers), workers
 
+    def test_every_seat_maps_to_a_live_databricks_endpoint_with_a_rate(self):
+        """No seat may silently fall back to IFA_DBX_DEFAULT_MODEL or a family price."""
+        from investment_firm.llm import backends, costs
+        from investment_firm.llm.models import DATABRICKS_ENDPOINTS
+
+        live = frozenset(DATABRICKS_ENDPOINTS)
+        firm = load_firm()
+        tiers = ("WORKER", "SENIOR", "AUTHORITY", "HEAD")
+        seats = {
+            m for p in firm["profiles"].values() for t in tiers for m in p.get(t, [])
+        }
+        seats |= {r["model"] for r in firm["roles"].values() if r.get("model")}
+        for model in sorted(seats):
+            assert backends.map_model(model, backend="databricks") in live, model
+            price = costs.price_for(model, backend="databricks")
+            assert price.basis == "databricks", model
+            assert price.source == "model", model
+
     def test_new_analyst_roles_resolve_in_all_profiles(self, monkeypatch):
         """sentiment/news/technical analysts load and resolve to a model everywhere."""
         monkeypatch.delenv("IFA_PROFILE", raising=False)

@@ -1,152 +1,122 @@
 # AGENTS.md
-_Last reconciled: 2025-07-08_
+_Last reconciled: 2026-09-30_
 
 ## Overview
 - Buy-side investment firm simulated as orchestrated LLM agents; produces an Investment Committee memo (decision-support only, never executes trades).
-- Runs on the Deutsche Börse AI Playground API (one endpoint, many model families), with **Databricks model serving** as an interchangeable second backend.
+- Two interchangeable LLM backends: **Databricks model serving (default)** and the Deutsche Börse AI Playground API (one endpoint, many model families).
 
 ## Architecture
-
-```
-config/firm.yaml  →  core/roster  →  core/planner  →  core/agent  →  core/orchestrator  →  Memo
-                                                         ↑
-                                               core/tools (data tools)
-                                               core/memory (ScratchMemory, RunMemory)
-                                               core/schemas (AnalystView, Memo)
-```
-
-The `llm/` layer is at the bottom: `config → models → backends → utils → costs → client`.
-Nothing in `llm/` knows about `core/`.
+- Flow: `config/firm.yaml → core/roster → core/planner → core/agent → core/debate → core/orchestrator → Memo`; agents use `core/tools`, `core/memory`, `core/schemas`.
+- `llm/` sits at the bottom (`config → models → backends → utils → costs → client`); nothing in `llm/` imports `core/`.
+- `data/` is pure, network-free compute; must not import `core/` or `interfaces/` (enforced by `tests/test_data_layout.py`); `core/risk.py`, `core/indicators.py`, `core/technicals.py` are re-export shims.
 
 ### llm/
-- `config.py` — lazy env/.env accessors; never module constants (testable). Key env vars: `AI_PLAYGROUND_API_KEY`, `AI_PLAYGROUND_VERIFY_SSL` (default false), `IFA_LLM_BACKEND`, `IFA_PROFILE`, `IFA_WEBSEARCH_MODE`, `IFA_CALL_PAUSE`.
-- `models.py` — static model lists + `is_claude/is_gemini/is_gpt/family`. `is_gpt` matches both `gpt*` and `o4*` prefixes. `OTHER_MODELS` includes `kimi-k2.6` and `o4-mini`. `DATABRICKS_CHAT_ENDPOINTS` (53) + `DATABRICKS_EMBEDDING_ENDPOINTS` (2) = `DATABRICKS_ENDPOINTS`: the serving-endpoint corpus the `databricks:` rate card is drift-tested against (workspace-custom `mv_*` / `agents_prod_*` endpoints are deliberately excluded and keep family fallback).
-- `utils.py` — format-agnostic parsing (`extract_text`, `extract_usage`, `extract_tool_calls` — handles both OpenAI `tool_calls` and Anthropic `tool_use` blocks, normalized to OpenAI style; `assistant_message` handles both response shapes).
-- `costs.py` — **backend-aware** pricing; tables live in **`config/costs.yaml`** (not Python): per model `{input, output, weight}` (USD per 1M tokens + unit-less weight per 1k, anchored to gpt-4o-mini≈0.2), `families` fallback, `default`, plus a `databricks:` rate card (`aliases` + `models`, keyed by endpoint name with the `databricks-` prefix stripped). Loaded lazily via `load_costs()` (`lru_cache`; `reload_costs()` clears; `IFA_COSTS_CONFIG` env overrides the path). `price_for(model, *, backend=None)` → `Price(input_usd, output_usd, weight, source, basis, confidence)` over three orthogonal axes: `source` = which YAML key matched (`model|family|default`), `basis` = which rate table billed (`vendor|databricks`), `confidence` = how the number was obtained (`list|published|vendor-proxy|estimated`, `Price.is_estimate` for the latter two). Ladder: `databricks.models` (databricks backend only, via `backends.map_model` **without** `available=` so pricing never hits the network) → `models` → `families` → `default`. Databricks entries omit `weight`, which is inherited from the vendor ladder for the *logical* name — so a `Price` may take USD from `databricks:` and weight from `models:`. Deliberately **uncached**, so a mid-session backend switch takes effect. All public helpers gained keyword-only `backend=None`: `price_source`, `cost_weight`, `estimate_cost`, `usd_price`, `estimate_usd`. `RunTracker.record(..., *, backend=None)` stores `cost_usd_input`, `cost_usd_output`, `price_source`, `price_basis`, `price_confidence`, `backend` per call — USD is tracked per direction because output bills at 4-6x input, with `cost_usd` a derived property (`cost_units` stays single: the weight applies identically to both directions); `total_input_tokens` / `total_output_tokens` / `total_usd_input` / `total_usd_output` aggregate the split; `by_model()` / `unpriced_models()` / `estimated_models()` / `vendor_priced_models()` feed the web Costs tab; `render_summary` marks fallback-priced models `*`, estimated `~`, and vendor-rate-on-Databricks (an under-report) `!`.
-- `client.py` — raw httpx POST to `/chat/completions`; Claude system-hoist + retries; Anthropic format conversion (`_convert_tools_for_claude`, `_convert_tool_choice_for_claude`, `_convert_messages_for_claude`); web-search injection (`_apply_web_search`); dispatches to the Databricks adapter when that backend is active; `supports_web_search_for(model)` and `supports_streaming_for(model)` shims (core never branches on provider). Gemini thinking models get `_GEMINI_MIN_OUTPUT_TOKENS = 4096` floor on `max_tokens` to prevent truncation by hidden reasoning tokens.
-- `backends.py` — backend registry (`playground` default | `databricks`); selection precedence `set_backend()` → `IFA_LLM_BACKEND` env → playground; capability advertising (`supports_web_search`, `supports_tools`); per-backend `map_model`.
-- `databricks_backend.py` — lazy adapter via `databricks-sdk` (`WorkspaceClient().serving_endpoints.get_open_ai_client()`); returns OpenAI-shaped dicts so `utils.py` parsers work unchanged; provider failures → `{"error": {...}}` envelopes; no web search (one-time warning). Model mapping: `databricks-*` passthrough → `IFA_DBX_MODEL_MAP` → mechanical transform → live-endpoint validation → `IFA_DBX_DEFAULT_MODEL` fallback.
-- `sanitize.py` — `sanitize_openai_messages(messages, *, tools_present)` balances Anthropic-style `tool_use`/`tool_result` histories for the strict Databricks backend (synthesizes missing tool results, drops orphans, flattens tool exchanges to text when no tools are sent), then strips response-echoed extras (`audio`/`refusal`/`function_call`/… whitelisted to role/content/name/tool_calls/tool_call_id). Wired in `databricks_backend.chat`; the Playground path does its own conversion and never uses this.
+- `config.py` — lazy env/.env accessors (never module constants). Env: `AI_PLAYGROUND_API_KEY`, `AI_PLAYGROUND_BASE_URL` (overrides endpoints.yaml), `AI_PLAYGROUND_VERIFY_SSL` (default false; true/false or CA-bundle path), `AI_PLAYGROUND_TIMEOUT` (60), `IFA_LLM_BACKEND` (default databricks), `IFA_PROFILE` (balanced), `IFA_WEBSEARCH_MODE` (auto|generic|anthropic), `IFA_WEBSEARCH_FLAG`, `IFA_CALL_PAUSE`.
+- `models.py` — static Playground model lists + `is_claude/is_gemini/is_gpt/family`; `is_gpt` matches `gpt*` and `o4*`; `OTHER_MODELS` = `kimi-k2.6`, `o4-mini`; `DEFAULT_MAX_TOKENS=16000` (Claude requires max_tokens).
+- `models.py` also holds `DATABRICKS_CHAT_ENDPOINTS` (53) + `DATABRICKS_EMBEDDING_ENDPOINTS` (2) = `DATABRICKS_ENDPOINTS`, the drift corpus for the `databricks:` rate card (workspace-custom `mv_*`/`agents_prod_*` excluded, keep family fallback).
+- `backends.py` — registry (`databricks` default | `playground`); precedence `set_backend()` → `IFA_LLM_BACKEND` → databricks; `supports_web_search` (False on Databricks; Claude/Gemini only on Playground), `supports_tools`; `map_model` (identity on Playground).
+- Databricks model mapping: `databricks-*` passthrough → `IFA_DBX_MODEL_MAP` (JSON) → mechanical transform (`claude-4.6-opus`→`databricks-claude-opus-4-6`, dots→dashes) → live-endpoint validation (only if `available=` given) → `IFA_DBX_DEFAULT_MODEL` fallback (default `databricks-claude-sonnet-4-6`, warns once per model).
+- `databricks_backend.py` — lazy `databricks-sdk` adapter (`WorkspaceClient().serving_endpoints.get_open_ai_client()`); returns OpenAI-shaped dicts; provider failures → `{"error": {...}}` envelopes; no web search (one-time warning).
+- `sanitize.py` — `sanitize_openai_messages(messages, *, tools_present)` balances tool_use/tool_result histories for strict Databricks (synthesizes missing results, drops orphans, flattens tool exchanges when no tools sent) and whitelists message keys; used only in `databricks_backend.chat`.
+- `utils.py` — format-agnostic parsing: `extract_text`, `extract_usage`, `extract_tool_calls` (OpenAI `tool_calls` + Anthropic `tool_use`, normalized to OpenAI), `assistant_message`, `extract_citations`, `has_web_evidence`.
+- `client.py` — raw httpx POST to `/chat/completions`; Claude system-hoist + retries; Anthropic conversion (`_convert_tools_for_claude`, `_convert_tool_choice_for_claude`, `_convert_messages_for_claude`); `_apply_web_search`; dispatches to Databricks adapter; shims `supports_web_search_for(model)`, `supports_streaming_for(model)`, `stream_chat`; Gemini `max_tokens` floored at `_GEMINI_MIN_OUTPUT_TOKENS = 4096`.
+- `costs.py` — backend-aware pricing from `config/costs.yaml`; `load_costs()` lru_cached (`reload_costs()` clears; `IFA_COSTS_CONFIG` overrides path); `price_for(model, *, backend=None)` → `Price(input_usd, output_usd, weight, source, basis, confidence)`.
+- Price axes: `source` = YAML key matched (`model|family|default`), `basis` = rate table (`vendor|databricks`), `confidence` = `list|published|vendor-proxy|estimated` (`Price.is_estimate` for last two).
+- Price ladder: `databricks.models` (databricks backend only, via `map_model` without `available=` so no network) → `models` → `families` → `default`; uncached so mid-session backend switches apply.
+- Databricks entries usually omit `weight` (inherited from vendor ladder for the logical name), but may set an explicit `weight:` — done for Databricks-only seat models (`claude-opus-5-5`, `claude-sonnet-5-5`, `gemini-3-8-flash`, `gemini-3-1-pro`, `gpt-5-6-terra`) whose logical names are absent from vendor `models:`.
+- Public cost helpers take keyword-only `backend=None`: `price_source`, `cost_weight`, `estimate_cost`, `usd_price`, `estimate_usd`.
+- `RunTracker.record(..., *, backend=None)` stores `cost_usd_input/output`, `price_source/basis/confidence`, `backend`; `cost_usd` derived; totals split by direction; `by_model()`/`unpriced_models()`/`estimated_models()`/`vendor_priced_models()` feed web Costs tab; `render_summary` marks fallback `*`, estimated `~`, vendor-rate-on-Databricks `!`; `would_exceed()` enforces `run_token_budget`.
 
 ### core/
-- `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`; tier round-robin + family hints + per-role model pin.
-- `planner.py` — `plan_roles()`: LLM call picks ordered analyst subset; catalogue annotates `optional: true` roles; falls back to the non-optional core candidates on unparseable JSON (all candidates only if every one is optional).
-- `prompts/` — department-organized system-prompt library. `base.py`: `BASE_HEADER` + FROZEN `JSON_CONTRACT` + `compose()` (contract appended to every prompt, can't be dropped). Role bodies: `analysts.py` (8 research bodies), `economists.py` (ONE horizon-parameterized template × 3), `trading.py` (ONE asset-class-parameterized desk template × 4), `risk.py` (`MARKET_RISK_BODY` + lens-parameterized credit/liquidity), `governance.py`, `librarian.py`, `debate.py` (`BULL_LABEL`/`BEAR_LABEL` + enriched bull/bear/judge prompts). `registry.py`: `body_for(spec)` fallback chain — role body → department body (by firm.yaml `group`) → generic mandate body. Public API: `system_prompt_for(spec)`. Plain strings only — no llm imports, no model-family branching.
-- `agent.py` — `Agent`: tool-using observe-think-act loop; `_strip_fences`, `_salvage_fields`, `_extract_json_block`; `_parse` cascade; resilience ladder (error retry without tools → fallback view; finalization call on max_steps exhaust). Accepts `web_search` / `web_search_max_uses` params (set by orchestrator). System prompt comes from `prompts.system_prompt_for(spec)`.
-- `orchestrator.py` — `run_committee()`: briefing → plan → analysts → CIO synthesis; `simple=True` for the fixed-analyst dry-run path. Accepts `on_event=None` and emits coarse `StepEvent`s. `CANDIDATE_ANALYSTS` (9 core) + `OPTIONAL_ANALYSTS` (6, annotated as optional in the planner catalogue).
-- `debate.py` — `run_debate()`: alternating Senior Research Bull/Bear turns over the analysts' full views, then a CIO judge; turn/judge failures yield explicit ERROR outcomes; accepts `on_event`.
-- `events.py` — step-event bus: `StepEvent`, `safe_emit` (swallows consumer errors), `to_dict`, kind constants. Opt-in `on_event=None`; zero LLM cost.
-- `errors.py` — shared error classifier: `error_summary`, `api_error_view`, `parse_error_view`. Mints explicit ERROR `AnalystView`s (grounded=False, conviction 0); API errors go to `key_risks`, never rationale.
-- `consultant.py` — read-only quant consultant: `Consultant.ask()` over a `RunContext` (memo + step events); default `claude-4.8-opus` (`IFA_CONSULTANT_MODEL`); read-only tool subset `CONSULTANT_TOOL_NAMES` (get_prices, get_indicators, compute_risk_metrics, run_backtest, run_strategy_backtest); refuses trades/writes; `_finalize` never re-bills an already-generated answer; streams tokens via `client.stream_chat` when backend supports it.
-- `memory.py` — `ScratchMemory` (per-agent working notes), `RunMemory` (shared briefing + colleagues' findings across agents).
-- `schemas.py` — `AnalystView` (+ `error`, ERROR stance), `Memo` (+ CIO attribution fields, ERROR recommendation); `render()` + `all_sources()`.
-- `tools/base.py` — `Tool`, `ToolRegistry`, `ToolError`; `dispatch()` returns JSON error envelopes rather than crashing the run.
-- `tools/datasources.py` — 13 free read-only tools: `get_prices` (yfinance), `get_ecb_rate`, `get_worldbank_indicator`, `get_company_filing` (EDGAR), `get_indicators` (whitelisted stockstats catalog via `data/indicators.py`), `compute_risk_metrics`, `run_backtest` (buy-and-hold), `run_strategy_backtest` (rule-based long/flat strategies via `data/backtest.py`), `get_fred_series`, `get_prediction_market_odds` (Polymarket), `get_stocktwits_sentiment`, `get_av_overview` (Alpha Vantage, needs key), `get_reddit_sentiment` (needs OAuth).
-- `tools/openbb_datasources.py` — optional OpenBB Platform tools (keyless providers): `get_yield_curve` (Fed H.15), `get_options_summary` (Cboe chains), `get_cpi` (OECD monthly yoy). `default_openbb_tools()` returns `[]` when `.[openbb]` extra is not installed. OpenBB is AGPLv3 — treated as local/personal use.
+- `roster.py` — `load_firm()`, `resolve_profile()`, `resolve_roles()` → `RoleSpec`; tier round-robin + `family:` hints + per-role `model:` pin; `profile_setting()`.
+- `planner.py` — `plan_roles()`: LLM picks ordered analyst subset; catalogue marks `optional: true`; on unparseable JSON falls back to non-optional candidates (all only if every one is optional).
+- `prompts/` — `base.py` (`BASE_HEADER`, FROZEN `JSON_CONTRACT`, `compose()`), `analysts.py`, `economists.py` (one horizon template ×3), `trading.py` (one desk template ×4), `risk.py`, `governance.py`, `librarian.py`, `debate.py`; `registry.body_for(spec)`: role body → department (firm.yaml `group`) → generic mandate; public `system_prompt_for(spec)`; plain strings, no llm imports.
+- `agent.py` — `Agent` tool-using loop; `_strip_fences`, `_extract_json_block`, `_salvage_fields`, `_parse` cascade; resilience ladder (error retry without tools → fallback view; finalization call on max_steps); `web_search`/`web_search_max_uses` params.
+- `orchestrator.py` — `run_committee(question, *, profile, simple, tracker, on_event, horizon="short")` → `(Memo, RunTracker)`: briefing (librarian) → plan (cio) → analysts sequentially (max_steps 3) → bull/bear debate (if `max_debate_rounds>0`) → CIO synthesis. Every stage receives `frame_question(question, horizon)`; `Memo.question` stays raw, `Memo.horizon` holds the key. `_synthesize` returns a `Synthesis` dataclass (recommendation, headline, summary, key_reasons, main_risks, what_to_watch, confidence 0-5), not a tuple; JSON keys ordered recommendation/headline/summary/confidence first so truncation loses lists only; `PLAIN_LANGUAGE_RULES` shared with the portfolio advisor.
+- `horizon.py` — `HORIZONS` (short 1y/1d, medium max/1wk, long max/1mo; tool lookback 1y/5y/max; portfolio period 1y/5y/max), `resolve_horizon`, `frame_question` (marker `Investment horizon: `; planner adds a long/short hint off it), `HorizonError`.
+- `glossary.py` — `GLOSSARY` of `GlossaryEntry(term, aliases, plain, how_calculated)`, `find_terms(*texts)` (whole-word, case-insensitive, GLOSSARY order), `entries(names)`, `METHODOLOGY` [(title, text)].
+- `portfolio_advisor.py` — `suggest(digest, *, market_context, horizon, model, tracker)`: one `client.chat(..., max_tokens=1500, json_mode=True)`; `IFA_ADVISOR_MODEL` (default `claude-5.5-opus`, read lazily); returns `{"status":"ok", assessment, strengths, weaknesses, ideas[{idea,why,type}], caveats}` or `{"status":"error", error, raw}` (never fabricates); unknown idea type → `watch`.
+- `CANDIDATE_ANALYSTS` (9 core) + `OPTIONAL_ANALYSTS` (6); `simple=True` = fixed equity/credit/rates, no tools/planner/web search/debate, max_steps 1.
+- `debate.py` — `run_debate()`: alternating Bull/Bear turns over full analyst views, then CIO judge; failures yield explicit ERROR outcomes; debate summary is fed into synthesis.
+- `events.py` — `StepEvent`, `safe_emit` (swallows consumer errors), `to_dict`, kind constants (incl. TOOL_*, CHAT_TOKEN, CHAT_DONE); opt-in `on_event=None`.
+- `errors.py` — `error_summary`, `api_error_view`, `parse_error_view`; ERROR `AnalystView`s (grounded=False, conviction 0), API errors in `key_risks` never rationale.
+- `consultant.py` — read-only quant consultant `Consultant.ask()` over `RunContext` (memo + tool-event digest, 12k chars); default model `claude-5.5-opus` (`IFA_CONSULTANT_MODEL`); tools `CONSULTANT_TOOL_NAMES` = get_prices, get_indicators, compute_risk_metrics, run_backtest, run_strategy_backtest; ≤4 steps; `_finalize` never re-bills an existing answer (chunks it into CHAT_TOKEN events); streams via `client.stream_chat` only for the forced final answer.
+- `memory.py` — `ScratchMemory` (per-agent notes), `RunMemory` (shared briefing + colleagues' findings).
+- `schemas.py` — `Source`, `DebateTurn`, `AnalystView` (+ error, ERROR stance), `Memo` (+ CIO/briefing/judge attribution, ERROR recommendation); `render()`, `all_sources()`.
+- `tools/base.py` — `Tool`, `ToolRegistry`, `ToolError`; `dispatch()` returns JSON error envelopes.
+- `tools/datasources.py` — 13 free read-only tools: get_prices, get_ecb_rate, get_worldbank_indicator, get_company_filing (EDGAR), compute_risk_metrics, run_backtest (buy-and-hold), run_strategy_backtest, get_indicators, get_fred_series, get_prediction_market_odds (Kalshi→Manifold), get_stocktwits_sentiment, get_av_overview (key), get_reddit_sentiment (OAuth).
+- `tools/openbb_datasources.py` — optional keyless OpenBB tools `get_yield_curve`, `get_options_summary`, `get_cpi`; `default_openbb_tools()` returns `[]` without `.[openbb]`; AGPLv3 → local/personal use.
 
 ### data/
-Pure, network-free compute — must not import from `core/` or `interfaces/` (both import from here).
-- `risk.py` — pure-stdlib quant metrics: `returns_from_prices`, `historical_var`, `parametric_var`, `expected_shortfall`, `annualized_vol`, `max_drawdown`, `risk_summary`. Positive values = losses.
-- `indicators.py` — shared stockstats indicator engine over a whitelisted catalog; feeds `get_indicators`, the web charts, and backtest signals (chart==agent invariant).
-- `backtest.py` — rule-based long/flat strategy backtester: `STRATEGIES` catalog (sma_crossover, macd_crossover, rsi_reversion, bollinger_reversion) + `run_strategy()` (no-lookahead one-bar position shift, `cost_bps`, buy-and-hold benchmark, risk metrics on equity curve).
-- `technicals.py` — investing.com-style technical-summary gauges for the web charts.
+- `risk.py` — stdlib VaR/ES/vol/drawdown (`risk_summary`); positive values = losses.
+- `indicators.py` — whitelisted stockstats catalog; feeds `get_indicators`, web charts and backtest signals (chart==agent invariant).
+- `backtest.py` — `STRATEGIES` (sma_crossover, macd_crossover, rsi_reversion, bollinger_reversion) + `run_strategy()` (one-bar shift no-lookahead, `cost_bps`, buy-and-hold benchmark; `return_curve=True` adds `equity` + `dates`, default output unchanged).
+- `portfolio.py` — `parse_portfolio` (CSV `ticker,weight|quantity[,price]` or JSON; ≤50 positions, 100 KB, percent auto-detect, duplicates merged) → `Portfolio`; `normalize_weights`, `align_closes` (inner join, ≥30 dates), `portfolio_equity` (none/monthly/daily), `drawdown_details`, `performance_stats` (CAGR, vol, Sharpe/Sortino/Calmar, VaR/ES, beta/TE/IR), `position_stats`, `diversification`, `rolling_vol`, `strategy_overlays` (lazy pandas) and `analyze_portfolio` (JSON-safe, series ≤600 points). `PortfolioError`.
+- `technicals.py` — investing.com-style technical-summary gauges for charts.
 
 ### interfaces/
-- `cli.py` — argparse CLI: `--models/--tokens/--smoke/--probe-websearch/--version` + positional `question`. `--stream/--no-stream` prints coarse step events; `--chat` opens a read-only consultant REPL.
-- `web/app.py` — FastAPI app; mounts static files; includes runs + market routers. Routes: `/`, `/api/health`, `/api/profiles`, `/api/preview`, `GET/POST /api/backend`.
-- `web/runs.py` — in-memory run registry (threading.Lock + daemon threads); routes: `POST /api/runs`, `GET /api/runs`, `GET /api/runs/{run_id}` (+ event_count), `GET /api/runs/{run_id}/events` (SSE), `POST /api/runs/{run_id}/chat` (read-only consultant; 409 until done). Buffers step events per run; stores raw `Memo` + chat history.
-- `web/market.py` / `web/market_data.py` — market chart endpoints; yfinance with SQLite cache (`.cache/investment_firm/market_data.sqlite`, override `INVESTMENT_FIRM_MARKET_CACHE`); Zscaler SSL via `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE`, explicit opt-out `INVESTMENT_FIRM_MARKET_VERIFY_SSL=false`.
-- `web/static/` — `index.html`, `app.css`, `app.js`, `charts.js`, vendored `lightweight-charts`. Plain no-build page. Run button → POST /api/runs → poll + SSE → tabbed results (Memo / Reasoning / Debate / Briefing / Sources / Costs / Consultant). LLM-backend dropdown in the run form.
+- `cli.py` — argparse: `--models/--tokens/--smoke/--probe-websearch/--version`, positional question, `--profile`, `--simple`, `--stream/--no-stream`, `--chat` (consultant REPL), `--horizon short|medium|long`, `--report PATH` (writes the HTML report).
+- `report/` — no fastapi import: `payload.build_run_result(memo, tracker, *, horizon, run_id)` (the result dict for every UI tab + `glossary`, `report_url`, `stance_plain`, `recommendation_plain`, `_FALLBACK_RISK`); `_html.py` helpers (`_esc`, `urlsplit`-checked `_link`, inline-SVG `_svg_line`/`_svg_multi_line`); `html.render_committee_report(result)`; `portfolio_html.render_portfolio_report(entry)`. Output has no `<script>`, no remote assets.
+- `web/app.py` — FastAPI; routes `/`, `/api/health`, `/api/profiles`, `/api/preview`, `GET/POST /api/backend`; includes runs + market routers.
+- `web/runs.py` — in-memory registry (threading.Lock + daemon threads): `POST /api/runs` (202; `horizon` Literal short|medium|long, else 422), `GET /api/runs`, `GET /api/runs/{id}` (+event_count, horizon), `GET /api/runs/{id}/events` (SSE), `POST /api/runs/{id}/chat` (409 until done), `GET /api/runs/{id}/report.html` (attachment; 409 until done); `_run_worker` delegates to `build_run_result`; `completed_memo(run_id)` (KeyError/RuntimeError) for the portfolio advisor.
+- `web/portfolio.py` / `portfolio_data.py` — `POST /api/portfolio/analyze` (free; 400 bad input/strategy, 502 provider, benchmark failure = warning), `GET /api/portfolio/{id}`, `GET .../report.html`, `POST .../suggest` (spends tokens; optional `run_id` memo context); registry `_analyses` (in-memory, cap 50); `_present()` adds `*_pct` display figures; `build_digest()` ≤8000 chars, no series. Prices via `market_data.get_price_history(t, period, "1d")` accessed through the module so tests can monkeypatch `fetch_yfinance_price_history`; `market_data.ohlcv_frame(payload)` shared with chart overlays.
+- `web/market.py` / `market_data.py` — `GET .../price-history`; yfinance + SQLite cache `.cache/investment_firm/market_data.sqlite` (`INVESTMENT_FIRM_MARKET_CACHE`); SSL via `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE`, opt-out `INVESTMENT_FIRM_MARKET_VERIFY_SSL=false`.
+- `web/static/` — no-build page (`index.html`, `app.css`, `extras.css`, `app.js`, `memo.js` (Memo tab), `charts.js`, `portfolio.js`, vendored lightweight-charts); tabs Memo/Reasoning/Debate/Briefing/Sources/Costs/Consultant; backend dropdown; horizon radio dispatches `ifa:horizon` (charts.js re-targets period/interval); portfolio panel with its own `data-ptab` tabs (app.js `initTabs` is scoped to `#results-panel`). `memo.js`/`portfolio.js` depend on app.js globals (`el`, `textBlock`, `recBadge`, `fetchJson`, `selectedHorizon`) and must load after it.
 
 ### config/
-- `firm.yaml` — single source of truth for roles (27 total: 13 core + 14 `optional: true`), tiers, profiles (budget/balanced/premium), data sources, committee voting rules.
-- `costs.yaml` — LLM price tables (USD per 1M tokens in/out + unit-less weight per 1k) with `families`/`default` fallbacks, plus a `databricks:` section (`aliases` + 55 endpoint entries) used only while that backend is active. Edit to change cost estimates; no code changes. Unlisted models are flagged ("fallback") in CLI summary + web Costs tab rather than priced silently; Databricks entries carry `src: published|vendor-proxy|estimated` so a guessed number is never reported as a published rate. Both YAMLs ship via `[tool.setuptools.package-data]`.
+- `firm.yaml` — roles (27: 13 core + 14 `optional: true`), tiers WORKER/SENIOR/AUTHORITY/HEAD, profiles budget/balanced(default)/premium with `web_search_max_uses`, `max_parallel`, `run_token_budget`, `max_debate_rounds` (1/2/3), `cio_cross_check`; data sources; committee rules.
+- Profile seats are Databricks-era names (e.g. `claude-5.5-opus`, `claude-5.5-sonnet`, `claude-4.5-haiku`, `gemini-3.8-flash`, `gemini-3.1-pro`, `gpt-5.6-terra`, `gpt-5.4-mini`), all of which transform to existing Databricks endpoints; most are NOT in `models.py` Playground lists.
+- `costs.yaml` — vendor `models` + `families` + `default`, plus `databricks:` (`aliases` + 55 endpoint entries with `src: published|vendor-proxy|estimated`); edit to change estimates, no code changes.
+- `endpoints.yaml` — all external URLs (loader `endpoints.py`, `IFA_ENDPOINTS_CONFIG`, https-only). YAMLs ship via `[tool.setuptools.package-data]`.
 
 ## Build & run
 - Install: `python -m venv .venv` then `.venv\Scripts\python.exe -m pip install -e .`
-- Extras: `.[data]` (yfinance/pandas/stockstats), `.[api]` (fastapi+uvicorn), `.[databricks]` (SDK), `.[openbb]` (AGPLv3, local/personal use), `.[dev]` (pytest+jupyter+black).
-- Backend switch: `IFA_LLM_BACKEND=databricks` (env or `.env`) or the web UI dropdown; Databricks auth via `DATABRICKS_HOST`+`DATABRICKS_TOKEN` env vars.
+- Extras: `.[data]` (yfinance/pandas/stockstats), `.[api]` (fastapi+uvicorn), `.[databricks]` (SDK), `.[openbb]` (AGPLv3), `.[dev]` (pytest+jupyter+black).
+- Backend: Databricks default (auth `DATABRICKS_HOST` + `DATABRICKS_TOKEN`); `IFA_LLM_BACKEND=playground` or web dropdown to switch.
 - CLI: `investment-firm "<question>" [--profile budget|balanced|premium] [--simple] [--chat]`
 - Web: `.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app`
-- Test: `.venv\Scripts\python.exe -m pytest` (offline); `-m live` to spend tokens.
+- Test: `.venv\Scripts\python.exe -m pytest -q` (offline; `live` deselected via `addopts`); `-m live` spends tokens — only on explicit request.
+- Tests use `FakeLLM` (`tests/conftest.py`) monkeypatching `llm.client.chat` with canned OpenAI/Anthropic/tool-call responses; autouse fixture pins every test to the playground backend regardless of `.env`.
 
 ## Conventions
-- Config read lazily via functions (not module constants) so tests can monkeypatch.
-- `client.chat` auto-hoists system messages to `payload["system"]` for Claude.
-- `_salvage_fields` rescues truncated Gemini JSON before the plain-text fallback.
-- Cost weights are rough/unit-less, anchored to gpt-4o-mini≈0.2 (budgeting only). `USD_PRICES` provides approximate real-money estimates per 1M tokens (input, output).
-- `votes`/`veto` in firm.yaml are stored in `RoleSpec` but not enforced until M2.
-- `bull_researcher`/`bear_researcher` carry explicit `model:` pins in firm.yaml (gpt-5.5 / claude-4.8-opus — high-tier debate seats overriding every profile).
-- Analyst system prompts come from `core/prompts/` (`system_prompt_for(spec)`); the JSON output contract in `prompts/base.py` is FROZEN (parsers in `agent.py` depend on it). All prompts inject today's date at call time. CIO synthesis + librarian task prompts still live in `orchestrator.py`.
-- `Agent.run` passes `json_mode=True` on every `client.chat` call; `client.chat` applies `response_format={"type":"json_object"}` for GPT-family models only (family branching stays in `llm/`).
-- Freshness gate: `Agent.run` counts successful tool calls and web citations. Views with neither get `grounded=False` plus an "UNVERIFIED" key_risk; failed tools add "DATA GAP" key_risks; stale `as_of` dates (windows in `agent._FRESHNESS_WINDOWS_DAYS`) are flagged in memory notes.
-- Real web-search URLs are carried as `Source` models on `AnalystView.citations` and `Memo.web_sources`; the web UI renders them as scheme-checked clickable links.
-- The `research_librarian` pins `family: claude`; the orchestrator additionally overrides any non-web-capable resolution to a web-capable WORKER model (warn + degrade, never crash).
-- Format conversion belongs only in `llm/`. The agent loop is intentionally format-agnostic; it always passes OpenAI-format structures to `client.chat`, which converts them transparently per-model family. Never add `is_claude`/`is_gemini` to `core/agent.py`.
-- Web search is per-family and profile-gated. Claude gets `web_search_20250305` tool **appended** (merged) to existing tools. Gemini gets `web_search_options: {}` (confirmed grounding). GPT and Kimi never receive the flag. Simple-mode runs skip web search entirely.
-- API errors must never surface as rationale. The resilience ladder ensures error messages are captured in `key_risks` as `"API error: <msg>"` and produce a fallback `AnalystView`, not raw error text in `rationale`.
+- Never hardcode a URL in code — use `config/endpoints.yaml`; `tests/test_endpoints.py` enforces it.
+- Config read lazily via functions so tests can monkeypatch.
+- Format conversion/family branching only in `llm/`; core always passes OpenAI-format structures and never uses `is_claude`/`is_gemini`.
+- `client.chat` hoists system messages to `payload["system"]` for Claude.
+- `Agent.run` passes `json_mode=True`; `client.chat` applies `response_format={"type":"json_object"}` for GPT only.
+- `prompts/base.py` JSON contract is FROZEN (agent parsers depend on it); prompts inject today's date at call time; CIO synthesis + librarian task prompts live in `orchestrator.py`.
+- Web search per family + profile-gated: Claude gets `web_search_20250305` tool appended to existing tools; Gemini gets `web_search_options: {}`; GPT/Kimi never; simple mode none.
+- Web citations carried as `Source` on `AnalystView.citations` / `Memo.web_sources` (deduped by URL); UI renders scheme-checked links.
+- Freshness gate: views with no successful tool call and no citation → `grounded=False` + "UNVERIFIED" key_risk; failed tools → "DATA GAP"; stale `as_of` flagged per `agent._FRESHNESS_WINDOWS_DAYS`.
+- API errors never in rationale: captured as `"API error: <msg>"` in `key_risks` with fallback `AnalystView`.
+- `research_librarian` pins `family: claude`; orchestrator swaps a non-web-capable librarian to the first web-capable WORKER model, else proceeds without web search (warn, never crash).
+- `bull_researcher`/`bear_researcher` pin `model:` `gpt-5.6-terra` / `claude-5.5-opus` (overrides every profile).
+- `votes`/`vote_weight`/`veto`/`tally` stored in `RoleSpec` but not enforced until M2.
+- Cost weights are unit-less budgeting dials anchored to gpt-4o-mini≈0.2; USD prices per 1M tokens are approximate.
 
 ## Auth & security
-- Key via `AI_PLAYGROUND_API_KEY` env / `.env`. `require_api_key()` raises `ConfigError`.
-- `AI_PLAYGROUND_VERIFY_SSL` defaults to `false` (Zscaler TLS inspection).
-- Decision-support only: no broker/exchange/wallet connections, no order execution.
-- `DISCLAIMER` from `investment_firm.__init__` appears in every Memo + CLI + web UI.
+- Playground key via `AI_PLAYGROUND_API_KEY` env/.env; `require_api_key()` raises `ConfigError` (placeholder `paste-your-key-here` counts as missing).
+- `AI_PLAYGROUND_VERIFY_SSL` defaults false (Zscaler TLS inspection); urllib3 insecure warnings silenced.
+- Decision-support only — never add order execution, broker/exchange/wallet connectivity, or automation acting on a memo without a human.
+- `DISCLAIMER` (`investment_firm.__init__`) appears in every Memo, CLI and web UI.
+- Consultant is read-only by construction (filtered tool registry) and refuses trades/writes.
+- Claude Code hooks (`.claude/settings.json`): edits to `.env*` blocked (except `.env.example`); edited `.py` auto-formatted with black.
 
 ## Gotchas / notes
-- **Environment quirks (DBAG work laptop).** Group policy blocks native binaries in user-writable dirs — invoke tools as `.venv/Scripts/python.exe -m <tool>` (e.g. black works, ruff's binary does not). `jq` is not installed.
-- **Gemini thinking models** eat the output budget with hidden reasoning; `client.py` floors `max_tokens` to 4096 for Gemini to prevent truncation.
-- **Planner fallback** on parse failure runs core (non-optional) candidates only, never the optional specialists — prevents fan-out on a bad JSON parse.
-- **`is_gpt` matches `o4-*` prefix** (for o4-mini reasoning model) in addition to `gpt-*`.
-- **budget/balanced WORKER tiers** contain only Claude/Gemini (web-search-capable); GPT remains in SENIOR+ tiers and premium.
-
-## Tests
-
-```
-tests/
-  conftest.py              FakeLLM fixture + openai_text/anthropic_text/openai_tool_call builders
-  test_client_offline.py   llm/ layer (response shapes, payload construction, web-search)
-  test_core_offline.py     agent parsing, tool dispatch, memory, run_committee, planner
-  test_errors.py           error classifier (api/parse ERROR views, invariants)
-  test_events.py           step-event bus (ordered kinds, safe_emit, raising consumer)
-  test_debate.py           Senior Research Bull/Bear labels, prompt carries analyst reasoning
-  test_consultant.py       read-only consultant (answers from memory, read-only subset, backtest)
-  test_llm_backends.py     backend registry + Databricks adapter (SDK fully mocked)
-  test_citations.py        web-search citations → Source models → memo web_sources
-  test_risk.py             quant metrics (VaR/ES/vol/drawdown sign conventions)
-  test_strategy_backtest.py strategy engine (signals, no-lookahead equity math, costs, errors)
-  test_prompts.py          prompt library — frozen contract, body selection, fallback chain
-  test_roster.py           resolve_profile precedence, round-robin, family, pin, errors
-  test_tools_format.py     tool schema/dispatch format
-  test_openbb_tools.py     OpenBB tools — gating, schemas, summaries (all mocked)
-  test_altdata_tools.py    FRED, Polymarket, StockTwits, Alpha Vantage, Reddit, EDGAR
-  test_indicators.py       indicator catalog, compute, snapshot, overlay, validation
-  test_technicals.py       technical summary gauges
-  test_data_layout.py      data/ package isolation (no core/ or interfaces/ imports)
-  test_web_offline.py      FastAPI routes via TestClient (no network)
-  test_web_runs.py         POST/GET /api/runs — validation, happy, error, list, SSE, chat
-  test_web_backend.py      GET/POST /api/backend switch
-  test_web_market.py       market chart endpoints + cache
-  test_smoke_live.py       opt-in live smoke (@pytest.mark.live)
-```
-
-**FakeLLM** (`conftest.py`): monkeypatches `investment_firm.llm.client.chat` with a queue of canned responses. Supports OpenAI text, Anthropic text, and OpenAI tool-call shapes. An autouse fixture pins every test to the playground backend regardless of `.env`.
-
-Run: `.venv\Scripts\python.exe -m pytest` (offline default).
-
-## Claude Code tooling
-
-- **`CLAUDE.md`** imports this file (`@AGENTS.md`) and adds graphify instructions.
-- **Project subagents** (`.claude/agents/`): `provenance-auditor`, `scope-compliance-guard`, `llm-cost-auditor`, `web-ui-tester`, `python-reviewer`, `fastapi-reviewer`, `security-reviewer`, `silent-failure-hunter`.
-- **Skills** (`.claude/skills/`): `run-offline-tests` (test-safety rules), `add-agent-role` (checklist for adding a roster role), `graphify` (knowledge-graph queries).
-- **Hooks** (`.claude/settings.json`): edits to `.env*` are blocked (except `.env.example`); edited `.py` files are auto-formatted with black; graphify hook-guards on Bash and Read/Glob.
-- **MCP servers** (`.mcp.json`): `context7` (HTTP, live library docs), `playwright` (npx stdio, browser automation).
-
-## Rules for coding agents
-
-**1. Offline tests only, by default.** `pytest` deselects `live` tests via `addopts` in `pyproject.toml`. Never run `-m live` or CLI runs against the real API unless the user explicitly asks. Run tests as `.venv/Scripts/python.exe -m pytest -q`.
-
-**2. Decision-support only — hard scope boundary.** Never add order execution, broker/exchange/wallet connectivity, or automation that acts on a memo without a human in the loop.
-
-**3. Environment quirks (DBAG work laptop).** Group policy blocks native binaries in user-writable dirs — invoke tools as `.venv/Scripts/python.exe -m <tool>`.
-- (2026-09-30) Cost gotcha: `RunTracker.record` is always called with the *logical* Playground model name (`spec.model`, see core/agent.py:214) even on the Databricks backend, because `map_model` happens inside `llm/`. `price_for` therefore does the mapping itself to reach the `databricks:` rate card, and feeds the **original** name (never the mapped endpoint) into the vendor ladder — passing `databricks-claude-opus-4-8` there would turn an exact `claude-4.8-opus` hit into a family fallback. `family()` on a `databricks-*` name returns "other", so always strip the prefix before family lookup. Tests touching costs must call `costs.reload_costs()` after monkeypatching `IFA_COSTS_CONFIG` (lru_cache) and reset the backend (`backends.reset_backend()`).
-- (2026-09-30) `gpt-4.1` and `gpt-4.1-mini` hold real tier slots in all three profiles but have **no** Databricks endpoint, so those seats silently run `IFA_DBX_DEFAULT_MODEL` there. Pricing now flags it (`!` in the CLI summary, `cost_vendor_priced_models` in the web payload); the actual fix is a `firm.yaml` tier change or an `IFA_DBX_MODEL_MAP` entry.
+- DBAG laptop group policy blocks native binaries in user-writable dirs — run tools as `.venv/Scripts/python.exe -m <tool>` (black works, ruff binary doesn't); `jq` not installed.
+- On the default Databricks backend no model has web search, so the librarian/analysts ground only via data tools (and many views may be flagged UNVERIFIED).
+- `RunTracker.record` always receives the logical model name (`spec.model`, `core/agent.py:214`); `price_for` maps it to reach the `databricks:` card but feeds the original name to the vendor ladder; `family()` of a `databricks-*` name is "other" — strip prefix first.
+- Cost tests must call `costs.reload_costs()` after monkeypatching `IFA_COSTS_CONFIG` and `backends.reset_backend()`.
+- Models with no Databricks endpoint (`gpt-4.1`, `gpt-4.1-mini`, `gpt-4o-mini`, `o4-mini`, `kimi-k2.6`, embeddings) get no alias → vendor-priced and flagged `!`; when live-validated they run `IFA_DBX_DEFAULT_MODEL`. Current firm.yaml seats no longer use them.
+- `max_parallel` and `cio_cross_check` are defined in firm.yaml profiles but not read by any code; analysts run sequentially.
+- Consultant `_SYSTEM` prompt lists only 4 tools (omits `run_strategy_backtest`) although the registry exposes 5.
+- Streamed consultant answers carry no usage; tracker approximates output tokens as `len(text)//4`.
+- Gemini thinking models eat output budget with hidden reasoning → 4096 `max_tokens` floor.
+- Planner parse-failure fallback never fans out to optional specialists.
+- budget/balanced WORKER tiers are Claude/Gemini only; GPT appears in SENIOR/AUTHORITY and premium WORKER.
+- Claude Code tooling: `CLAUDE.md` imports `@AGENTS.md`; subagents in `.claude/agents/` (provenance-auditor, scope-compliance-guard, llm-cost-auditor, web-ui-tester, python-reviewer, fastapi-reviewer, security-reviewer, silent-failure-hunter); skills `run-offline-tests`, `add-agent-role`, `graphify`; MCP `context7` + `playwright` in `.mcp.json`.
+- (2026-10-02) Reasoning-model output floor (supersedes the Gemini-only `_GEMINI_MIN_OUTPUT_TOKENS` Playground note): `llm/models.is_reasoning_model(model)` (strips `databricks-` prefix; True for Gemini and `gpt-5*`/`o1*`/`o3*`/`o4*`; gpt-4.x/4o False) + `REASONING_MIN_OUTPUT_TOKENS = 4096`; applied as a max_tokens floor in BOTH `client.chat` (Playground) and `databricks_backend.chat` (on the logical name). Fixes GPT-5 debate turns (cap 500) returning empty text because hidden reasoning consumed the budget. `client._GEMINI_MIN_OUTPUT_TOKENS` remains as an alias. `gpt-6*`/`gpt-oss*` are NOT yet classified as reasoning. `utils.extract_text` content-parts branch keeps only parts with type None/'text'/'output_text'.
+- (2026-10-02, updated) RunTracker.would_exceed counts cumulative input+output tokens across every call (each agent tool-loop step re-sends the full history) PLUS `RunTracker.reserved`. `run_committee` reserves debate+judge+synthesis budget before the analyst loop (`reserve()`), releases the debate share after the analysts (`release(n)`) and the rest in a `finally` before synthesis, so analysts stop early instead of starving later stages. `_synthesize` now pre-checks the budget and caps output at 2000 (retry 4000); debate turns cap 1200, judge 800 (each retried once at 4x when empty/truncated); Agent default max_tokens 1200, librarian 2500. firm.yaml run_token_budget: budget 100k, balanced 300k, premium 400k.
+- (2026-10-02) (2026-10-03) Output-truncation/JSON-recovery hardening. `llm/utils.finish_reason(resp)` / `is_truncated(resp)` normalise OpenAI `finish_reason` and Anthropic `stop_reason` ('max_tokens' -> 'length'). `Agent` keeps `last_text` (final raw model text), takes `repair=True`: when the answer isn't parseable JSON it makes ONE tool-free repair call (max_tokens 800, input capped at 6000 chars, skipped if the run budget can't fit it) before falling back to the ERROR view; a truncated+unusable answer is first retried once at 2x max_tokens; the last loop step appends the user reminder 'When done, reply with ONLY the JSON object.' (the generic 'Stop calling tools' finalization message is skipped in that case). The librarian runs with `repair=False`, max_tokens 2500: if it returns prose instead of JSON, `_build_briefing` uses `librarian.last_text` (fences stripped, capped 6000 chars) as the briefing instead of the ERROR string. `_synthesize`: on truncated/unparseable JSON retries once at 2x cap with a '<=5 sentences' nudge, then `_salvage_synthesis` (regex recommendation + partial summary marked '(truncated)'), else ERROR. `debate._judge` has `_salvage_verdict` (stance + partial summary); error texts include `finish_reason=`. `databricks_backend` now retries 408/409/429/5xx and connection/timeout errors (recognised by status_code / class name, no openai import) with Retry-After or jittered exponential backoff (base 2s, cap 30s), limits via `config.dbx_max_retries()` (`IFA_DBX_MAX_RETRIES`, 4) and `config.dbx_retry_budget()` (`IFA_DBX_RETRY_BUDGET`, 90s); a 400 mentioning max_tokens is healed by retrying with the ceiling named in the error (or dropping the param) and the working value is remembered per endpoint in module dict `_MAX_TOKENS`. Exhausted retries still return the `{"error": ...}` envelope. Tests: tests/test_databricks_retry.py, tests/test_orchestrator_synthesis.py, additions in test_debate.py / test_core_offline.py (the prose-refusal test now queues a 2nd response for the repair call; any test queueing a single unparseable analyst reply must do likewise or FakeLLM raises RuntimeError).
+- (2026-10-03) Executor hand-off plans are root-level markdown files following the `planning.md` template: 0 Context → 1 HARD CONSTRAINTS → 2 current-vs-target table → 3 new file layout → 4/5 ordered steps (each keeps `pytest -q` green) → 6 test plan (names the existing tests that constrain the change) → 7 executor handoff (venv/black/no-live-tests/no-commits) → appended "Execution status" checklist. Web result payload for a run is built inline in `interfaces/web/runs.py::_run_worker` (dict with recommendation/summary/views/debate/costs/warnings) — the same dict feeds all UI tabs.
+- (2026-10-03) Implemented `planning-horizon-report-portfolio.md` (horizon, plain-language Synthesis + HTML reports, portfolio analytics/advisor). Gotcha: `tests/test_endpoints.py::test_no_url_is_hardcoded_in_source` greps every src .py line for regex `https?://`, so scheme checks must use `urlsplit(...).scheme` or the literal `r"^https?://"`, never `startswith("https://")`; inline SVG in reports therefore carries no `xmlns` URL. New UI/JS code goes in `memo.js`/`portfolio.js`/`extras.css` because `app.js`/`app.css` already exceed the 800-line cap.

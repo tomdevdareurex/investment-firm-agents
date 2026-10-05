@@ -43,6 +43,16 @@ def plan_roles(
     )
     valid = {c.name for c in candidates}
     user = f"Question: {question}\n\nAvailable roles:\n{catalogue}"
+    if "Investment horizon: Long term" in question:
+        user += (
+            "\n\nHint: long horizon — prefer economist_long and strategist; "
+            "technical and sentiment analysts add little."
+        )
+    elif "Investment horizon: Short term" in question:
+        user += (
+            "\n\nHint: short horizon — technical, sentiment and news analysts "
+            "are relevant."
+        )
     messages = [
         {"role": "system", "content": _PLANNER_SYSTEM},
         {"role": "user", "content": user},

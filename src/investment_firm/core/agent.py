@@ -25,6 +25,7 @@ from ..llm.utils import (
     extract_tool_calls,
     extract_usage,
     is_completion_error,
+    is_truncated,
     get_error_message,
 )
 from . import errors, events
@@ -45,6 +46,25 @@ _FRESHNESS_WINDOWS_DAYS = {
     "get_options_summary": 3,
     "get_cpi": 90,
 }
+
+
+# Reminder appended after the last step's tool results (nudges a JSON-only answer).
+_LAST_STEP_REMINDER = "When done, reply with ONLY the JSON object."
+
+# JSON repair pass: convert a prose answer into the required JSON view.
+_REPAIR_MAX_TOKENS = 800
+_REPAIR_INPUT_CHARS = 6000
+_REPAIR_PROMPT = (
+    "Convert this analysis into ONLY the JSON object described in your instructions "
+    "(stance, conviction, rationale, key_risks, evidence). Use only what the analysis "
+    "below says — add no new facts or numbers. No prose, no code fences.\n\n"
+    "ANALYSIS:\n{analysis}"
+)
+
+
+def _estimate_input_tokens(messages: List[dict]) -> int:
+    """Rough token estimate (~4 chars/token) of a message list, for budget checks."""
+    return sum(len(str(m.get("content") or "")) for m in messages) // 4
 
 
 def _strip_fences(text: str) -> str:
@@ -152,6 +172,7 @@ class Agent:
         max_tokens: int = 1200,
         web_search: bool = False,
         web_search_max_uses: int = 3,
+        repair: bool = True,
     ):
         self.spec = spec
         self.tools = tools
@@ -159,7 +180,12 @@ class Agent:
         self.max_tokens = max_tokens
         self.web_search = web_search
         self.web_search_max_uses = web_search_max_uses
+        # Convert a prose answer to JSON via one extra call. Roles whose output is
+        # free prose by design (the librarian) turn this off and use ``last_text``.
+        self.repair = repair
         self.memory = ScratchMemory()
+        # Final raw model text of the last run() (before parsing); "" if none.
+        self.last_text = ""
 
     @property
     def system_prompt(self) -> str:
@@ -188,10 +214,13 @@ class Agent:
         tool_schemas = self.tools.schemas() if self.tools and len(self.tools) else None
 
         final_text = ""
+        self.last_text = ""
+        truncated = False  # did the call that produced final_text hit its output cap?
+        reminded = False  # was the JSON-only reminder already appended?
         grounded_calls = 0
         data_gaps: List[tuple] = []  # (tool_name, structured failure reason)
         citations: List[dict] = []
-        for _ in range(self.max_steps):
+        for step in range(self.max_steps):
             # Budget guard: stop spending if the run budget would be exceeded.
             if tracker is not None and tracker.would_exceed(self.max_tokens):
                 self.memory.remember("stopped early: run token budget reached")
@@ -237,6 +266,7 @@ class Agent:
                     if not is_completion_error(resp2):
                         citations.extend(extract_citations(resp2))
                         final_text = extract_text(resp2, strict=False)
+                        truncated = is_truncated(resp2)
                         break
                     err_msg = get_error_message(resp2) or err_msg
                 # Both error (or no tools) — explicit ERROR view, never fake analysis.
@@ -316,19 +346,25 @@ class Agent:
                             "content": result,
                         }
                     )
+                if step == self.max_steps - 1:
+                    # Last step: nudge the model to answer in JSON next.
+                    messages.append({"role": "user", "content": _LAST_STEP_REMINDER})
+                    reminded = True
                 continue  # observe results, loop again
 
             final_text = extract_text(resp, strict=False)
+            truncated = is_truncated(resp)
             break
 
         # Finalization: if max_steps exhausted with model still tool-calling (empty text)
         if not final_text and tool_schemas:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "Stop calling tools. Answer now with ONLY the JSON object.",
-                }
-            )
+            if not reminded:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Stop calling tools. Answer now with ONLY the JSON object.",
+                    }
+                )
             start_fin = time.perf_counter()
             fin_resp = client.chat(
                 self.spec.model,
@@ -347,11 +383,86 @@ class Agent:
             if not is_completion_error(fin_resp):
                 citations.extend(extract_citations(fin_resp))
                 final_text = extract_text(fin_resp, strict=False)
+                truncated = is_truncated(fin_resp)
 
-        view = self._parse(final_text)
+        view = self._parse_or_none(final_text)
+        if view is None and truncated:
+            # The answer hit the output cap and nothing usable could be salvaged:
+            # retry once with double the cap.
+            bigger = self._retry_bigger(messages, tracker)
+            if bigger.strip():
+                final_text = bigger
+                view = self._parse_or_none(final_text)
+        if view is None and self.repair and final_text.strip():
+            view = self._repair(final_text, tracker)
+        self.last_text = final_text
+        if view is None:
+            view = self._parse(final_text)  # explicit ERROR view
         grounded = self._apply_grounding(view, grounded_calls, data_gaps, citations)
         self._emit_done(on_event, grounded)
         return grounded
+
+    def _extra_call(
+        self,
+        messages: List[dict],
+        max_tokens: int,
+        tracker: Optional[RunTracker],
+        *,
+        web_search: bool,
+    ) -> Optional[dict]:
+        """One tool-free follow-up call; ``None`` if the run budget forbids it."""
+        reserve = max_tokens + _estimate_input_tokens(messages)
+        if tracker is not None and tracker.would_exceed(reserve):
+            return None
+        start = time.perf_counter()
+        resp = client.chat(
+            self.spec.model,
+            messages,
+            max_tokens=max_tokens,
+            web_search=web_search,
+            max_uses=self.web_search_max_uses,
+            json_mode=True,
+        )
+        elapsed = time.perf_counter() - start
+        if tracker is not None:
+            inp, out, _ = extract_usage(resp)
+            tracker.record(self.spec.name, self.spec.model, inp, out, elapsed)
+        return resp
+
+    def _retry_bigger(self, messages: List[dict], tracker: Optional[RunTracker]) -> str:
+        """Re-ask with 2x ``max_tokens`` after a truncated, unusable answer."""
+        resp = self._extra_call(
+            messages, self.max_tokens * 2, tracker, web_search=self.web_search
+        )
+        if resp is None or is_completion_error(resp):
+            return ""
+        self.memory.remember("answer hit the output cap; retried with a larger cap")
+        return extract_text(resp, strict=False)
+
+    def _repair(
+        self, raw_text: str, tracker: Optional[RunTracker]
+    ) -> Optional[AnalystView]:
+        """Convert a prose answer into the JSON view with one cheap tool-free call.
+
+        Returns ``None`` (caller falls back to the explicit ERROR view) if the
+        budget forbids the call, the call fails, or its output still won't parse.
+        """
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {
+                "role": "user",
+                "content": _REPAIR_PROMPT.format(
+                    analysis=raw_text.strip()[:_REPAIR_INPUT_CHARS]
+                ),
+            },
+        ]
+        resp = self._extra_call(messages, _REPAIR_MAX_TOKENS, tracker, web_search=False)
+        if resp is None or is_completion_error(resp):
+            return None
+        view = self._parse_or_none(extract_text(resp, strict=False))
+        if view is not None:
+            self.memory.remember("prose answer converted to JSON by repair pass")
+        return view
 
     def _emit_done(
         self, on_event: Optional[events.EventSink], view: AnalystView
@@ -421,18 +532,27 @@ class Agent:
             evidence=_clean_str_list(data.get("evidence", [])),
         )
 
-    def _parse(self, text: str) -> AnalystView:
+    def _parse_or_none(self, text: str) -> Optional[AnalystView]:
+        """Parse cascade steps 1-2 (clean JSON, then salvage); ``None`` if both fail."""
         # 1) Clean, balanced JSON.
         block = _extract_json_block(text)
         if block is not None:
             try:
-                return self._to_view(json.loads(block))
+                data = json.loads(block)
+                if isinstance(data, dict):
+                    return self._to_view(data)
             except (ValueError, TypeError):
                 pass
         # 2) Truncated/unbalanced JSON — salvage the fields we can.
         salvaged = _salvage_fields(text)
         if salvaged is not None:
             return self._to_view(salvaged)
+        return None
+
+    def _parse(self, text: str) -> AnalystView:
+        parsed = self._parse_or_none(text)
+        if parsed is not None:
+            return parsed
         # 3) Total fallback: explicit ERROR view carrying the raw text, clearly
         # marked as a failure — never a plausible-looking NEUTRAL.
         self.memory.remember(f"unparseable model output: {text[:200]!r}")

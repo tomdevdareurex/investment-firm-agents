@@ -130,6 +130,12 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 # Claude models *require* max_tokens; this default is injected when none is supplied.
 DEFAULT_MAX_TOKENS = 16000
 
+# Reasoning ("thinking") models bill hidden reasoning against the same output budget
+# as the visible reply, so a tight ``max_tokens`` can be consumed entirely by
+# reasoning and return empty/truncated text. Callers' caps are floored at this value
+# for :func:`is_reasoning_model` models (a floor only — never lowers a cap).
+REASONING_MIN_OUTPUT_TOKENS = 4096
+
 
 def is_claude(model: str) -> bool:
     """True if ``model`` is a Claude (Anthropic-format) model."""
@@ -145,6 +151,21 @@ def is_gpt(model: str) -> bool:
     """True if ``model`` is an OpenAI GPT / o-series model."""
     m = model.lower()
     return m.startswith("gpt") or m.startswith("o4")
+
+
+def is_reasoning_model(model: str) -> bool:
+    """True if ``model`` spends hidden reasoning tokens from its output budget.
+
+    Covers Gemini (2.5+ thinking models) and OpenAI reasoning models (``gpt-5*``,
+    ``o1*``/``o3*``/``o4*``). A leading ``databricks-`` prefix is ignored so endpoint
+    names classify like their logical names. ``gpt-4.x`` / ``gpt-4o`` stay ``False``.
+    """
+    m = model.lower()
+    if m.startswith("databricks-"):
+        m = m[len("databricks-") :]
+    if is_gemini(m):
+        return True
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def family(model: str) -> str:

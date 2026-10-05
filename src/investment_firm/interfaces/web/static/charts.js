@@ -385,6 +385,21 @@
 
   // ── Load flow ────────────────────────────────────────────────────────────
 
+  // Investment horizon (radio in the question form) → default chart window.
+  const HORIZON_CHART = {
+    short:  { period: '1y',  interval: '1d'  },
+    medium: { period: 'max', interval: '1wk' },
+    long:   { period: 'max', interval: '1mo' },
+  };
+
+  function applyHorizon(h) {
+    const cfg = HORIZON_CHART[h];
+    if (!cfg) return;
+    document.getElementById('chart-period').value = cfg.period;
+    document.getElementById('chart-interval').value = cfg.interval;
+    loadChart();
+  }
+
   async function loadChart() {
     const ticker = document.getElementById('chart-ticker').value.trim();
     const period = document.getElementById('chart-period').value;
@@ -438,6 +453,7 @@
       );
       return;
     }
+    document.addEventListener('ifa:horizon', (e) => applyHorizon(e.detail && e.detail.horizon));
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       loadChart();

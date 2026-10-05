@@ -10,6 +10,11 @@ GET /api/preview       Resolved roles, run_token_budget, profile, disclaimer.
 POST /api/runs         Start a committee run (202); returns run_id.
 GET  /api/runs         List all runs (status + metadata).
 GET  /api/runs/{id}    Poll a run; result included when status==done.
+GET  /api/runs/{id}/report.html     Self-contained HTML report of a done run.
+POST /api/portfolio/analyze         Portfolio analytics + backtests (no tokens).
+GET  /api/portfolio/{id}            Stored portfolio analysis.
+GET  /api/portfolio/{id}/report.html  Portfolio HTML report.
+POST /api/portfolio/{id}/suggest    Advisor suggestions (spends tokens).
 
 Run::
 
@@ -35,6 +40,7 @@ except ImportError as _exc:  # pragma: no cover
     ) from _exc
 
 import investment_firm
+from investment_firm.core.horizon import HORIZONS
 from investment_firm.core.orchestrator import (
     CANDIDATE_ANALYSTS,
     LIBRARIAN_ROLE,
@@ -52,6 +58,7 @@ from investment_firm.core.roster import (
 from investment_firm.llm import backends as _backends
 
 from investment_firm.interfaces.web.market import router as _market_router
+from investment_firm.interfaces.web.portfolio import router as _portfolio_router
 from investment_firm.interfaces.web.runs import router as _runs_router
 
 _STATIC = Path(__file__).parent / "static"
@@ -74,6 +81,9 @@ app.include_router(_runs_router)
 
 # Market-data sub-router (GET /api/market/price-history)
 app.include_router(_market_router)
+
+# Portfolio analytics sub-router (/api/portfolio/...)
+app.include_router(_portfolio_router)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +213,11 @@ def preview(
         default=None, description="Profile name (default: yaml default)."
     ),
     simple: bool = Query(default=False, description="Use simple fixed-analyst mode."),
+    horizon: str = Query(
+        default="short",
+        pattern=r"^(short|medium|long)$",
+        description="Investment horizon framing.",
+    ),
 ) -> Dict[str, Any]:
     """Preview which roles/models would run — zero API/LLM calls.
 
@@ -229,6 +244,8 @@ def preview(
     return {
         "profile": profile_name,
         "simple": simple,
+        "horizon": horizon,
+        "horizon_label": HORIZONS[horizon].label,
         "run_token_budget": budget,
         "roles": roles,
         "disclaimer": investment_firm.DISCLAIMER,

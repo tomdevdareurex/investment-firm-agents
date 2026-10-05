@@ -317,6 +317,9 @@ class RunTracker:
 
     token_budget: int = 0  # 0 = no budget enforced
     records: List[CallRecord] = field(default_factory=list)
+    # Tokens held back for later, mandatory stages (debate/judge/synthesis). Counts
+    # against the budget in :meth:`would_exceed` so earlier stages can't starve them.
+    reserved: int = 0
 
     def record(
         self,
@@ -384,10 +387,28 @@ class RunTracker:
         return sum(r.cost_usd_output for r in self.records)
 
     def would_exceed(self, additional_tokens: int) -> bool:
-        """True if adding ``additional_tokens`` would exceed the token budget."""
+        """True if adding ``additional_tokens`` (on top of any reservation) would
+        exceed the token budget."""
         if self.token_budget <= 0:
             return False
-        return self.total_tokens + additional_tokens > self.token_budget
+        return self.total_tokens + additional_tokens + self.reserved > self.token_budget
+
+    def reserve(self, tokens: int) -> None:
+        """Hold back ``tokens`` of the budget for later stages (adds to any existing hold)."""
+        self.reserved += max(0, int(tokens))
+
+    def release(self, tokens: Optional[int] = None) -> None:
+        """Release ``tokens`` of the reservation, or all of it when ``None``."""
+        if tokens is None:
+            self.reserved = 0
+        else:
+            self.reserved = max(0, self.reserved - max(0, int(tokens)))
+
+    def remaining(self) -> Optional[int]:
+        """Tokens left before the budget (net of reservations); ``None`` if unbudgeted."""
+        if self.token_budget <= 0:
+            return None
+        return max(0, self.token_budget - self.total_tokens - self.reserved)
 
     def by_model(self) -> List[dict]:
         """Aggregate usage per model, most expensive first (JSON-friendly dicts)."""

@@ -31,6 +31,21 @@ issues — that's your job.
    appears); network failures from data providers degrade gracefully with a
    visible message, not a blank page or uncaught exception.
 5. Check the browser console for errors/warnings on every page visited.
+6. Horizon radio: switching to long sets the chart selects to `max`/`1mo`,
+   medium to `max`/`1wk`, short to `1y`/`1d`, and reloads the chart; the
+   preview shows the horizon; Run sends it in the POST body.
+7. Memo tab (only if a finished run exists): headline, "In plain words",
+   the three lists, horizon badge, confidence dots and the "Words used in this
+   memo" glossary render.
+8. "Download report (HTML)" is hidden until a run is done, then downloads an
+   attachment.
+9. Portfolio: upload `docs/examples/portfolio_sample.csv`, click "Analyse
+   portfolio" — all five portfolio tabs fill (Overview, Positions, Backtests,
+   Charts, Suggestion) and the portfolio report downloads. The suggest button
+   shows a confirm dialog (cancel it unless told to spend tokens); when run it
+   renders ideas or an explicit error box.
+10. `app.js`, `memo.js`, `charts.js` and `portfolio.js` use no `innerHTML`
+    for API text; no console errors.
 
 ## Teardown
 

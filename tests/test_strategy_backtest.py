@@ -53,6 +53,17 @@ class TestCatalog:
             assert 0.0 <= out["time_in_market"] <= 1.0
             assert out["max_drawdown"] >= 0.0  # positive = loss convention
 
+    def test_return_curve_adds_equity_and_dates_only(self):
+        df = _ohlcv(60)
+        default = backtest.run_strategy(df, "sma_crossover")
+        curve = backtest.run_strategy(df, "sma_crossover", return_curve=True)
+        assert len(curve["equity"]) == len(df)
+        assert len(curve["dates"]) == len(df)
+        assert curve["dates"][0] == "2026-01-01"
+        assert curve["equity"][0] == 1.0
+        assert set(curve) - {"equity", "dates"} == set(default)
+        assert {k: curve[k] for k in default} == default
+
 
 class TestSignalHelpers:
     def test_above_handles_missing_values(self):

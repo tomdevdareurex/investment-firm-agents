@@ -10,11 +10,13 @@ raises :class:`ToolError` with an install hint instead of crashing.
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import List
 
 from .base import Tool, ToolError
+from ... import endpoints
 from ...data.backtest import STRATEGIES, BacktestError, run_strategy
 from ...data.risk import risk_summary
 from ...data.indicators import INDICATORS, IndicatorError, latest_snapshot
@@ -65,7 +67,7 @@ def get_prices(ticker: str, period: str = "1mo") -> dict:
 def get_ecb_rate(series: str = "FM.D.U2.EUR.4F.KR.MRR_FR.LEV") -> dict:
     """Return the latest value of an ECB SDW series (default: MRO rate)."""
     requests = _require("requests")  # type: ignore
-    url = f"https://data-api.ecb.europa.eu/service/data/{series}"
+    url = endpoints.url("data.ecb", series=series)
     resp = requests.get(
         url, params={"lastNObservations": 1, "format": "jsondata"}, timeout=30
     )
@@ -94,7 +96,7 @@ def get_worldbank_indicator(
 ) -> dict:
     """Return the latest World Bank indicator value (default: euro-area CPI inflation)."""
     requests = _require("requests")  # type: ignore
-    url = f"https://api.worldbank.org/v2/country/{country}/indicator/{indicator}"
+    url = endpoints.url("data.worldbank", country=country, indicator=indicator)
     resp = requests.get(url, params={"format": "json", "per_page": 5}, timeout=30)
     if resp.status_code != 200:
         raise ToolError(f"World Bank HTTP {resp.status_code}")
@@ -123,10 +125,7 @@ def get_company_filing(cik: str, concept: str = "Revenues") -> dict:
     """
     requests = _require("requests")  # type: ignore
     cik_padded = str(cik).strip().zfill(10)
-    url = (
-        f"https://data.sec.gov/api/xbrl/companyconcept/"
-        f"CIK{cik_padded}/us-gaap/{concept}.json"
-    )
+    url = endpoints.url("data.edgar", cik=cik_padded, concept=concept)
     user_agent = (
         os.getenv("SEC_USER_AGENT", "").strip()
         or "investment-firm-agents (educational; contact: user)"
@@ -379,8 +378,9 @@ def get_fred_series(series: str = "DGS10") -> dict:
     """
     requests = _require("requests")  # type: ignore
     series_id = str(series).strip().upper()
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(
+        endpoints.url("data.fred"), params={"id": series_id}, timeout=30
+    )
     if resp.status_code != 200:
         raise ToolError(f"FRED HTTP {resp.status_code} for {series_id!r}")
     rows = [r for r in resp.text.splitlines() if r.strip()]
@@ -411,77 +411,211 @@ def get_fred_series(series: str = "DGS10") -> dict:
     }
 
 
-# --- Polymarket: prediction-market odds (read-only, public Gamma API) ------
+# --- Prediction markets: Kalshi (primary) + Manifold (fallback), read-only ---
+
+_KALSHI_SERIES: dict = {"rows": None}  # per-process cache of the macro series catalogue
+_QUERY_STOPWORDS = frozenset(
+    {"the", "a", "an", "of", "in", "on", "to", "will", "be", "by", "for", "and", "or"}
+)
 
 
-def _parse_json_field(value):
-    """Polymarket returns some list fields as JSON-encoded strings; decode defensively."""
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            import json
+def _http_error(venue: str, resp) -> ToolError:
+    """Build a ToolError for a non-200 response, naming a corporate-proxy block."""
+    server = str((getattr(resp, "headers", None) or {}).get("server", ""))
+    if resp.status_code == 403 and "zscaler" in server.lower():
+        return ToolError(
+            f"{venue} HTTP 403: blocked by the corporate Zscaler proxy (site "
+            "category); not retryable — needs an IT allowlist"
+        )
+    return ToolError(f"{venue} HTTP {resp.status_code}")
 
-            return json.loads(value)
-        except ValueError:
-            return None
+
+def _json_or_error(venue: str, resp):
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise ToolError(f"{venue} returned non-JSON") from exc
+
+
+def _query_keywords(query: str) -> List[str]:
+    """Lower-case content words; years/numbers are dropped (series titles omit them)."""
+    words = re.findall(r"[a-z0-9]+", str(query).lower())
+    return [w for w in words if w not in _QUERY_STOPWORDS and not w.isdigit()]
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _kalshi_series_catalogue(requests) -> list:
+    """Fetch the series list once per process, keeping only the configured categories."""
+    if _KALSHI_SERIES["rows"] is not None:
+        return _KALSHI_SERIES["rows"]
+    resp = requests.get(
+        endpoints.url("prediction_markets.kalshi_series"),
+        params={"include_volume": "true"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise _http_error("Kalshi", resp)
+    payload = _json_or_error("Kalshi", resp)
+    rows = payload.get("series") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise ToolError("Kalshi series response had no 'series' list")
+    wanted = set(endpoints.setting("kalshi.categories"))
+    kept = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cats = set(row.get("categories") or []) | {row.get("category")}
+        if cats & wanted:
+            kept.append(row)
+    _KALSHI_SERIES["rows"] = kept
+    return kept
+
+
+def _kalshi_price_pct(market: dict):
+    """Implied YES probability in percent: last trade, else bid/ask midpoint."""
+    last = _to_float(market.get("last_price_dollars"))
+    if last:
+        return round(last * 100, 1)
+    bid = _to_float(market.get("yes_bid_dollars"))
+    ask = _to_float(market.get("yes_ask_dollars"))
+    if bid is not None and ask:
+        return round((bid + ask) / 2 * 100, 1)
     return None
 
 
-def get_prediction_market_odds(query: str, limit: int = 5) -> dict:
-    """Return read-only prediction-market implied odds from Polymarket's Gamma API.
-
-    Decision-support only: this reads market-implied probabilities as a signal —
-    it never places, plans, or authorizes any trade, and uses no wallet or venue
-    credentials. ``query`` is a free-text market search (e.g. 'ECB rate cut 2026').
-    """
-    requests = _require("requests")  # type: ignore
-    limit = max(1, min(int(limit), 10))
-    url = "https://gamma-api.polymarket.com/markets"
-    params = {
-        "closed": "false",
-        "limit": limit,
-        "order": "volumeNum",
-        "ascending": "false",
-        "query": query,
-    }
-    resp = requests.get(url, params=params, timeout=30)
-    if resp.status_code != 200:
-        raise ToolError(f"Polymarket HTTP {resp.status_code}")
-    try:
-        payload = resp.json()
-    except ValueError as exc:
-        raise ToolError("Polymarket returned non-JSON") from exc
-    markets_raw = payload if isinstance(payload, list) else (payload.get("data") or [])
-    markets = []
-    for market in markets_raw[:limit]:
-        if not isinstance(market, dict):
-            continue
-        outcomes = _parse_json_field(market.get("outcomes"))
-        prices = _parse_json_field(market.get("outcomePrices"))
-        odds = {}
-        if isinstance(outcomes, list) and isinstance(prices, list):
-            for name, price in zip(outcomes, prices):
-                try:
-                    odds[str(name)] = round(
-                        float(price) * 100, 1
-                    )  # fraction -> percent
-                except (TypeError, ValueError):
+def _kalshi_odds(requests, query: str, limit: int) -> list:
+    keywords = _query_keywords(query)
+    if not keywords:
+        raise ToolError(f"no searchable keywords in {query!r}")
+    need = max(1, (len(keywords) + 1) // 2)
+    scored = []
+    for row in _kalshi_series_catalogue(requests):
+        text = f"{row.get('title', '')} {' '.join(row.get('tags') or [])}".lower()
+        hits = sum(1 for w in keywords if w in text)
+        if hits >= need:
+            volume = _to_float(row.get("volume_fp")) or 0.0
+            scored.append((hits, volume, row))
+    if not scored:
+        raise ToolError(f"no Kalshi series matched {query!r}")
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    cap = min(limit, int(endpoints.setting("kalshi.max_markets")))
+    markets: list = []
+    for _, _, row in scored[: int(endpoints.setting("kalshi.max_series"))]:
+        resp = requests.get(
+            endpoints.url("prediction_markets.kalshi_events"),
+            params={
+                "series_ticker": row.get("ticker"),
+                "status": "open",
+                "with_nested_markets": "true",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise _http_error("Kalshi", resp)
+        payload = _json_or_error("Kalshi", resp)
+        for event in (
+            payload.get("events") if isinstance(payload, dict) else None
+        ) or []:
+            for market in event.get("markets") or []:
+                pct = _kalshi_price_pct(market)
+                if pct is None:
                     continue
+                label = market.get("yes_sub_title") or ""
+                title = event.get("title") or row.get("title") or ""
+                markets.append(
+                    {
+                        "question": f"{title} — {label}" if label else title,
+                        "implied_odds_pct": {"Yes": pct, "No": round(100 - pct, 1)},
+                        "ticker": market.get("ticker"),
+                    }
+                )
+                if len(markets) >= cap:
+                    return markets
+    if not markets:
+        raise ToolError(f"no priced open Kalshi markets for {query!r}")
+    return markets
+
+
+def _manifold_odds(requests, query: str, limit: int) -> list:
+    resp = requests.get(
+        endpoints.url("prediction_markets.manifold_search"),
+        params={
+            "term": query,
+            "filter": "open",
+            "contractType": "BINARY",
+            "sort": "most-popular",
+            "limit": limit,
+        },
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise _http_error("Manifold", resp)
+    payload = _json_or_error("Manifold", resp)
+    markets = []
+    for market in payload if isinstance(payload, list) else []:
+        prob = (
+            _to_float(market.get("probability")) if isinstance(market, dict) else None
+        )
+        if prob is None:
+            continue
+        pct = round(prob * 100, 1)
         markets.append(
             {
-                "question": market.get("question") or market.get("title") or "",
-                "implied_odds_pct": odds,
+                "question": market.get("question") or "",
+                "implied_odds_pct": {"Yes": pct, "No": round(100 - pct, 1)},
             }
         )
     if not markets:
-        raise ToolError(f"no Polymarket markets matched {query!r}")
-    return {
-        "query": query,
-        "markets": markets,
-        "source": "Polymarket (Gamma API, read-only market-implied odds)",
-        "as_of": _now_iso(),
-    }
+        raise ToolError(f"no Manifold markets matched {query!r}")
+    return markets[:limit]
+
+
+_ODDS_VENUES = (
+    (
+        "Kalshi",
+        _kalshi_odds,
+        "Kalshi (CFTC-regulated exchange, read-only implied odds)",
+    ),
+    (
+        "Manifold",
+        _manifold_odds,
+        "Manifold (play-money market — weaker signal than real-money odds)",
+    ),
+)
+
+
+def get_prediction_market_odds(query: str, limit: int = 5) -> dict:
+    """Return read-only prediction-market implied odds for ``query``.
+
+    Tries Kalshi (real-money, regulated) first and falls back to Manifold
+    (play-money) only when Kalshi finds nothing or fails. Venues are never mixed.
+    Decision-support only: this reads market-implied probabilities as a signal —
+    it never places, plans, or authorizes any trade, and uses no wallet or venue
+    credentials. ``query`` is a short topic (e.g. 'Fed rate cut', 'US recession').
+    """
+    requests = _require("requests")  # type: ignore
+    limit = max(1, min(int(limit), 10))
+    failures = []
+    for venue, fetch, source in _ODDS_VENUES:
+        try:
+            markets = fetch(requests, query, limit)
+        except (ToolError, requests.RequestException) as exc:
+            failures.append(f"{venue}: {exc}")
+            continue
+        return {
+            "query": query,
+            "venue": venue,
+            "markets": markets,
+            "source": source,
+            "as_of": _now_iso(),
+        }
+    raise ToolError("no prediction-market odds — " + "; ".join(failures))
 
 
 # --- StockTwits: retail sentiment (public stream) --------------------------
@@ -496,14 +630,12 @@ def get_stocktwits_sentiment(symbol: str, limit: int = 30) -> dict:
     requests = _require("requests")  # type: ignore
     sym = str(symbol).strip().upper()
     limit = max(1, min(int(limit), 30))
-    url = f"https://api.stocktwits.com/api/2/streams/symbol/{sym}.json"
+    url = endpoints.url("data.stocktwits", symbol=sym)
     resp = requests.get(url, timeout=30)
     if resp.status_code == 404 and not sym.endswith(".X"):
         # Crypto streams use a ".X" suffix on StockTwits (e.g. BTC.X).
         crypto_sym = f"{sym}.X"
-        crypto_url = (
-            f"https://api.stocktwits.com/api/2/streams/symbol/{crypto_sym}.json"
-        )
+        crypto_url = endpoints.url("data.stocktwits", symbol=crypto_sym)
         retry = requests.get(crypto_url, timeout=30)
         if retry.status_code == 200:
             sym = crypto_sym
@@ -576,11 +708,11 @@ def get_av_overview(symbol: str) -> dict:
     if not key:
         raise ToolError(
             "ALPHA_VANTAGE_API_KEY not set; add it to .env "
-            "(free key: https://www.alphavantage.co/support/#api-key)"
+            f"(free key: {endpoints.url('docs.alphavantage_key')})"
         )
     sym = str(symbol).strip().upper()
     resp = requests.get(
-        "https://www.alphavantage.co/query",
+        endpoints.url("data.alphavantage"),
         params={"function": "OVERVIEW", "symbol": sym, "apikey": key},
         timeout=30,
     )
@@ -640,10 +772,10 @@ def _reddit_token(requests) -> str:
     if not client_id or not secret:
         raise ToolError(
             "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET not set; add them to .env "
-            "(create a 'script' app at https://www.reddit.com/prefs/apps)"
+            f"(create a 'script' app at {endpoints.url('docs.reddit_apps')})"
         )
     resp = requests.post(
-        "https://www.reddit.com/api/v1/access_token",
+        endpoints.url("data.reddit_token"),
         data={"grant_type": "client_credentials"},
         auth=(client_id, secret),
         headers={"User-Agent": user_agent},
@@ -677,7 +809,7 @@ def get_reddit_sentiment(
     sub = str(subreddit).strip().lstrip("r/").strip("/") or "wallstreetbets"
     limit = max(1, min(int(limit), 50))
     resp = requests.get(
-        f"https://oauth.reddit.com/r/{sub}/search",
+        endpoints.url("data.reddit_search", subreddit=sub),
         params={
             "q": query,
             "restrict_sr": "1",
@@ -980,14 +1112,16 @@ _FRED_TOOL = Tool(
 _PREDICTION_MARKET_TOOL = Tool(
     name="get_prediction_market_odds",
     description=(
-        "Get read-only prediction-market implied odds (percent) from Polymarket for a "
-        "free-text query, e.g. 'ECB rate cut 2026'. Decision-support only — reads "
-        "market-implied probabilities as a signal; never trades or uses a wallet."
+        "Get read-only prediction-market implied odds (percent) for a short topic, "
+        "e.g. 'Fed rate cut' or 'US recession'. Uses Kalshi (regulated, real-money) "
+        "and falls back to Manifold (play-money, weaker signal); the result names the "
+        "venue. Decision-support only — reads market-implied probabilities as a "
+        "signal; never trades or uses a wallet."
     ),
     parameters={
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "free-text market search"},
+            "query": {"type": "string", "description": "short topic keywords"},
             "limit": {
                 "type": "integer",
                 "description": "max markets to return (1-10)",

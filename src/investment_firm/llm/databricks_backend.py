@@ -19,10 +19,14 @@ agent resilience ladder handles them (e.g. retry without tools).
 from __future__ import annotations
 
 import logging
+import random
+import re
+import time
 from functools import lru_cache
 from typing import Any, Optional, Sequence
 
-from . import backends
+from . import backends, config
+from .models import REASONING_MIN_OUTPUT_TOKENS, is_reasoning_model
 from .sanitize import sanitize_openai_messages
 
 _log = logging.getLogger(__name__)
@@ -83,6 +87,129 @@ def _available_endpoints() -> Optional[frozenset]:
 
 _warned_web_search = False
 
+# --- Transient-failure retry + max_tokens healing --------------------------
+# Slim port of dbx-llm's ``_create_with_retry``. The openai exception types are
+# recognised by ``status_code`` / class name so this module never imports openai.
+_RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+_RETRYABLE_CLASS_NAMES = frozenset({"APIConnectionError", "APITimeoutError"})
+_RETRY_BASE_DELAY = 2.0
+_RETRY_MAX_DELAY = 30.0
+
+# Per-endpoint max_tokens that actually works, learned from a 400. ``None`` means
+# the endpoint rejects the parameter outright and it is omitted from then on.
+_MAX_TOKENS: dict[str, Optional[int]] = {}
+_NUMBER_RE = re.compile(r"\d+")
+
+
+def _status_code(exc: Exception) -> Optional[int]:
+    code = getattr(exc, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """True if ``exc`` is a transient failure worth waiting out."""
+    if _status_code(exc) in _RETRYABLE_STATUS:
+        return True
+    return any(cls.__name__ in _RETRYABLE_CLASS_NAMES for cls in type(exc).__mro__)
+
+
+def _retry_after(exc: Exception) -> Optional[float]:
+    """Server-requested wait in seconds from a Retry-After header, if any."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        return None
+    for name, scale in (("retry-after", 1.0), ("retry-after-ms", 0.001)):
+        raw = headers.get(name)
+        if raw:
+            try:
+                return float(raw) * scale
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before retry ``attempt`` (0-based): Retry-After or jittered backoff."""
+    server = _retry_after(exc)
+    if server is not None:
+        return min(server, _RETRY_MAX_DELAY)
+    return min(_RETRY_BASE_DELAY * (2**attempt), _RETRY_MAX_DELAY) + random.uniform(
+        0, 1
+    )
+
+
+def _max_tokens_remedy(exc: Exception, current: Any, tried: set) -> Any:
+    """``max_tokens`` value to retry with, ``"drop"`` to omit it, or ``None`` to give up.
+
+    An endpoint that rejects the cap usually names the ceiling it accepts; we take
+    the largest number in the message that is below the cap we sent. With no such
+    number the parameter is dropped (once).
+    """
+    if _status_code(exc) != 400 or "max_tokens" not in str(exc):
+        return None
+    candidates = [int(n) for n in _NUMBER_RE.findall(str(exc))]
+    if isinstance(current, int):
+        candidates = [n for n in candidates if 0 < n < current]
+    candidates = [n for n in candidates if n not in tried]
+    if candidates:
+        return max(candidates)
+    return "drop" if "drop" not in tried else None
+
+
+def _create_with_retry(endpoint: str, kwargs: dict) -> Any:
+    """Call ``chat.completions.create``, waiting out transient failures.
+
+    Also heals a 400 about ``max_tokens`` by resending with the ceiling the error
+    names (or without the parameter); the working value is remembered per endpoint.
+    Re-raises the last error once retries or the sleep budget are exhausted.
+    """
+    if endpoint in _MAX_TOKENS:
+        learned = _MAX_TOKENS[endpoint]
+        if learned is None:
+            kwargs.pop("max_tokens", None)
+        elif "max_tokens" in kwargs:
+            kwargs["max_tokens"] = min(kwargs["max_tokens"], learned)
+    max_retries = config.dbx_max_retries()
+    budget = config.dbx_retry_budget()
+    slept = 0.0
+    attempt = 0
+    tried_tokens: set = set()
+    healed = False
+    while True:
+        try:
+            response = _openai_client().chat.completions.create(**kwargs)
+        except DatabricksBackendError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - classified below, else re-raised
+            if "max_tokens" in kwargs:
+                remedy = _max_tokens_remedy(exc, kwargs["max_tokens"], tried_tokens)
+                if remedy is not None:
+                    tried_tokens.add(remedy)
+                    if remedy == "drop":
+                        kwargs.pop("max_tokens", None)
+                    else:
+                        kwargs["max_tokens"] = remedy
+                    healed = True
+                    continue
+            delay = _retry_delay(exc, attempt) if _is_retryable(exc) else 0.0
+            if not delay or attempt >= max_retries or slept + delay > budget:
+                raise
+            _log.warning(
+                "Databricks call to %r failed (%s); retry %d/%d in %.1fs",
+                endpoint,
+                exc.__class__.__name__,
+                attempt + 1,
+                max_retries,
+                delay,
+            )
+            time.sleep(delay)
+            slept += delay
+            attempt += 1
+        else:
+            if healed:
+                _MAX_TOKENS[endpoint] = kwargs.get("max_tokens")
+            return response
+
 
 def chat(
     model: str,
@@ -120,6 +247,11 @@ def chat(
         "messages": sanitize_openai_messages(messages, tools_present=bool(tools)),
     }
     if max_tokens is not None:
+        # Reasoning models (GPT-5.x, Gemini) spend hidden thinking tokens from the
+        # same budget; floor the cap (classified on the logical name) so a tight
+        # cap can't return empty text.
+        if is_reasoning_model(model):
+            max_tokens = max(max_tokens, REASONING_MIN_OUTPUT_TOKENS)
         kwargs["max_tokens"] = max_tokens
     if temperature is not None:
         kwargs["temperature"] = temperature
@@ -131,7 +263,7 @@ def chat(
         kwargs.update(extra)
 
     try:
-        response = _openai_client().chat.completions.create(**kwargs)
+        response = _create_with_retry(endpoint, kwargs)
     except DatabricksBackendError:
         raise
     except Exception as exc:  # noqa: BLE001 - surface as error dict, not a crash

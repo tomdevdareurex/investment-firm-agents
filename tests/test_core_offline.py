@@ -667,16 +667,114 @@ class TestAgentResilience:
             "I cannot provide a buy or sell recommendation. As a news analyst I "
             "would defer to the portfolio managers on positioning."
         )
-        llm = fake_llm([openai_text(refusal)])
+        # Second response is the JSON-repair pass, which also fails to produce JSON.
+        llm = fake_llm([openai_text(refusal), openai_text(refusal)])
         agent = Agent(_spec(name="news_analyst"), tools=None, max_steps=2)
         view = agent.run("Latest macro news impact?")
 
+        llm.assert_call_count(2)
         assert view.stance == "ERROR"
         assert view.conviction == 0
         assert view.grounded is False
         assert view.rationale.startswith("ERROR: model did not return structured JSON")
         assert "cannot provide" in view.rationale  # raw refusal carried, labelled
         assert "model did not return structured JSON" in view.key_risks
+        assert agent.last_text == refusal
+
+    def test_markdown_answer_is_repaired_into_json_view(self, fake_llm):
+        """Haiku-style markdown answer → one repair call → valid analyst view."""
+        prose = "## TECHNICAL ANALYSIS\n- Price above 200-SMA: textbook uptrend."
+        llm = fake_llm([openai_text(prose), openai_text(_clean_json())])
+        agent = Agent(_spec(name="technical_analyst"), tools=None, max_steps=2)
+        view = agent.run("Should I buy SPY?")
+
+        llm.assert_call_count(2)
+        assert view.stance == "BULLISH"
+        assert view.rationale == "Strong earnings."
+        _, messages, kwargs = llm.calls[1]
+        assert kwargs["max_tokens"] == 800
+        assert not kwargs.get("tools")
+        assert kwargs.get("web_search") is False
+        assert messages[0]["role"] == "system"
+        assert (
+            "Convert this analysis into ONLY the JSON object" in messages[1]["content"]
+        )
+        assert "textbook uptrend" in messages[1]["content"]
+        assert agent.last_text == prose
+        assert any("repair pass" in n for n in agent.memory.notes)
+
+    def test_repair_input_is_capped(self, fake_llm):
+        llm = fake_llm([openai_text("§" * 20000), openai_text(_clean_json())])
+        Agent(_spec(), tools=None).run("Q?")
+        repair_user = llm.calls[1][1][1]["content"]
+        assert repair_user.count("§") == 6000
+
+    def test_repair_is_recorded_on_tracker(self, fake_llm):
+        fake_llm([openai_text("just prose"), openai_text(_clean_json())])
+        tracker = RunTracker()
+        Agent(_spec(), tools=None).run("Q?", tracker=tracker)
+        assert len(tracker.records) == 2
+
+    def test_repair_skipped_when_budget_does_not_allow(self, fake_llm):
+        llm = fake_llm([openai_text("just prose")])
+        tracker = RunTracker(token_budget=100)
+        agent = Agent(_spec(), tools=None, max_tokens=10)
+        view = agent.run("Q?", tracker=tracker)  # first call fits; repair (800) can't
+        llm.assert_call_count(1)
+        assert view.stance == "ERROR"
+
+    def test_repair_can_be_disabled(self, fake_llm):
+        llm = fake_llm([openai_text("## Briefing\n- SPY 767")])
+        agent = Agent(_spec(), tools=None, repair=False)
+        view = agent.run("Q?")
+        llm.assert_call_count(1)
+        assert view.stance == "ERROR"
+        assert agent.last_text == "## Briefing\n- SPY 767"
+
+    def test_truncated_unusable_answer_retried_with_double_cap(self, fake_llm):
+        cut = openai_text("Let me think about the trend first and")
+        cut["choices"][0]["finish_reason"] = "length"
+        llm = fake_llm([cut, openai_text(_clean_json())])
+        agent = Agent(_spec(), tools=None, max_tokens=100)
+        view = agent.run("Q?")
+
+        llm.assert_call_count(2)
+        assert view.stance == "BULLISH"
+        assert llm.calls[0][2]["max_tokens"] == 100
+        assert llm.calls[1][2]["max_tokens"] == 200
+
+    def test_truncated_but_salvageable_answer_is_not_retried(self, fake_llm):
+        cut = openai_text(
+            '{"stance": "BEARISH", "conviction": 2, "rationale": "Too much'
+        )
+        cut["choices"][0]["finish_reason"] = "length"
+        llm = fake_llm([cut])
+        view = Agent(_spec(), tools=None).run("Q?")
+        llm.assert_call_count(1)
+        assert view.stance == "BEARISH"
+
+    def test_last_step_adds_json_only_reminder_before_finalization(self, fake_llm):
+        final = '{"stance":"NEUTRAL","conviction":3,"rationale":"done","key_risks":[],"evidence":[]}'
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),
+                openai_tool_call("get_data", {}),  # last step (max_steps=2)
+                openai_text(final),  # finalization
+            ]
+        )
+        agent = Agent(_spec(), tools=_make_tool_registry(), max_steps=2)
+        view = agent.run("Q?")
+
+        llm.assert_call_count(3)
+        assert view.rationale == "done"
+        last_messages = llm.calls[2][1]
+        assert last_messages[-1] == {
+            "role": "user",
+            "content": "When done, reply with ONLY the JSON object.",
+        }
+        assert not any(
+            "Stop calling tools" in str(m.get("content")) for m in last_messages
+        )
 
     def test_web_search_forwarded_to_client(self, fake_llm):
         """web_search=True on Agent is forwarded as kwarg to client.chat."""

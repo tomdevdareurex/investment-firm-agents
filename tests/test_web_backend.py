@@ -13,7 +13,7 @@ from investment_firm.llm import backends  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clean_backend_state(monkeypatch):
-    monkeypatch.delenv("IFA_LLM_BACKEND", raising=False)
+    monkeypatch.setenv("IFA_LLM_BACKEND", "playground")
     backends.reset_backend()
     yield
     backends.reset_backend()
@@ -24,7 +24,7 @@ def client_app():
     return TestClient(app)
 
 
-def test_get_backend_defaults_to_playground(client_app):
+def test_get_backend_reports_active_backend(client_app):
     resp = client_app.get("/api/backend")
     assert resp.status_code == 200
     data = resp.json()

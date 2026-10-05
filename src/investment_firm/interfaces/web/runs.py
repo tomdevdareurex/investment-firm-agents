@@ -5,6 +5,7 @@ Routes
 POST /api/runs          Start a committee run (202 + run_id).
 GET  /api/runs          List all runs (status + metadata only).
 GET  /api/runs/{run_id} Poll a run; when done includes full result envelope.
+GET  /api/runs/{run_id}/report.html  Download the self-contained HTML report.
 
 The registry is a plain dict protected by a threading.Lock.
 Runs are daemon threads so they die when the server exits; no persistence.
@@ -17,11 +18,11 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, Literal, Optional
 
 try:
     from fastapi import APIRouter, HTTPException
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import HTMLResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError as _exc:  # pragma: no cover
     raise RuntimeError(
@@ -38,6 +39,9 @@ from investment_firm.core.roster import (
     profile_names,
     resolve_profile,
 )
+from investment_firm.core.schemas import Memo
+from investment_firm.interfaces.report import build_run_result, render_committee_report
+from investment_firm.interfaces.report.payload import _FALLBACK_RISK  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Registry (in-memory, thread-safe)
@@ -45,8 +49,6 @@ from investment_firm.core.roster import (
 
 _lock: threading.Lock = threading.Lock()
 _registry: Dict[str, Dict[str, Any]] = {}
-
-_FALLBACK_RISK = "model did not return structured JSON"
 
 # Max step events retained per run (seq stays monotonic even after trimming).
 _EVENT_CAP = 2000
@@ -69,6 +71,7 @@ class RunRequest(BaseModel):
     question: str
     profile: Optional[str] = None
     simple: bool = False
+    horizon: Literal["short", "medium", "long"] = "short"
 
 
 class ChatRequest(BaseModel):
@@ -101,7 +104,11 @@ def _make_emit(run_id: str):
 
 
 def _run_worker(
-    run_id: str, question: str, profile: Optional[str], simple: bool
+    run_id: str,
+    question: str,
+    profile: Optional[str],
+    simple: bool,
+    horizon: str = "short",
 ) -> None:
     """Execute run_committee in a daemon thread and store the result."""
     with _lock:
@@ -110,119 +117,9 @@ def _run_worker(
     emit = _make_emit(run_id)
     try:
         memo, tracker = run_committee(
-            question, profile=profile, simple=simple, on_event=emit
+            question, profile=profile, simple=simple, on_event=emit, horizon=horizon
         )
-        # Build warnings list
-        warnings: List[str] = []
-        for view in memo.views:
-            if view.stance == "ERROR":
-                warnings.append(
-                    f"{view.role}: ERROR — {view.error or 'analysis step failed'}"
-                )
-            if _FALLBACK_RISK in view.key_risks or _FALLBACK_RISK in view.rationale:
-                warnings.append(
-                    f"{view.role}: model did not return structured JSON — "
-                    "rationale contains raw text fallback."
-                )
-            for risk in view.key_risks:
-                if risk.startswith("API error"):
-                    warnings.append(f"{view.role}: API error — {risk}")
-            if not view.grounded:
-                warnings.append(
-                    f"{view.role}: ungrounded — no successful tool call or web "
-                    "citation backed this view."
-                )
-        if tracker.token_budget > 0 and tracker.total_tokens >= tracker.token_budget:
-            warnings.append(
-                f"Token budget reached or exceeded: "
-                f"{tracker.total_tokens} / {tracker.token_budget} tokens used."
-            )
-        for model_name in tracker.unpriced_models():
-            warnings.append(
-                f"Cost estimate for {model_name} uses family/default fallback pricing "
-                "— add the model to config/costs.yaml for an accurate figure."
-            )
-        for model_name in tracker.vendor_priced_models():
-            warnings.append(
-                f"{model_name} ran on Databricks but has no databricks: entry in "
-                "config/costs.yaml — costed at vendor list rates, which Databricks "
-                "does not bill."
-            )
-        for model_name in tracker.estimated_models():
-            warnings.append(
-                f"Databricks has no published rate for {model_name} — its cost is "
-                "estimated from the nearest published sibling."
-            )
-
-        # Per-call cost records as structured list
-        call_records = [
-            {
-                "agent": r.agent,
-                "model": r.model,
-                "input_tokens": r.input_tokens,
-                "output_tokens": r.output_tokens,
-                "total_tokens": r.total_tokens,
-                "cost_units": round(r.cost_units, 4),
-                "cost_usd_input": round(r.cost_usd_input, 6),
-                "cost_usd_output": round(r.cost_usd_output, 6),
-                "cost_usd": round(r.cost_usd, 6),
-                "price_source": r.price_source,
-                "price_basis": r.price_basis,
-                "price_confidence": r.price_confidence,
-                "backend": r.backend,
-                "latency_s": round(r.latency_s, 3),
-            }
-            for r in tracker.records
-        ]
-
-        result = {
-            "recommendation": memo.recommendation,
-            "summary": memo.summary,
-            "profile": memo.profile,
-            "question": memo.question,
-            "briefing": memo.briefing,
-            "briefing_role": memo.briefing_role,
-            "briefing_model": memo.briefing_model,
-            "views": [
-                {
-                    "role": v.role,
-                    "model": v.model,
-                    "stance": v.stance,
-                    "conviction": v.conviction,
-                    "rationale": v.rationale,
-                    "error": v.error,
-                    "key_risks": v.key_risks,
-                    "evidence": v.evidence,
-                    "grounded": v.grounded,
-                    "citations": [c.model_dump() for c in v.citations],
-                }
-                for v in memo.views
-            ],
-            "sources": memo.all_sources(),
-            "web_sources": [s.model_dump() for s in memo.web_sources],
-            "debate": [t.model_dump() for t in memo.debate],
-            "debate_summary": memo.debate_summary,
-            "synth_role": memo.synth_role,
-            "synth_model": memo.synth_model,
-            "debate_judge_role": memo.debate_judge_role,
-            "debate_judge_model": memo.debate_judge_model,
-            "cost_summary": tracker.render_summary(),
-            "cost_usd_estimate": round(tracker.total_usd, 4),
-            "cost_usd_input_estimate": round(tracker.total_usd_input, 4),
-            "cost_usd_output_estimate": round(tracker.total_usd_output, 4),
-            "cost_units_total": round(tracker.total_cost, 4),
-            "total_tokens": tracker.total_tokens,
-            "total_input_tokens": tracker.total_input_tokens,
-            "total_output_tokens": tracker.total_output_tokens,
-            "token_budget": tracker.token_budget,
-            "cost_by_model": tracker.by_model(),
-            "cost_unpriced_models": tracker.unpriced_models(),
-            "cost_estimated_models": tracker.estimated_models(),
-            "cost_vendor_priced_models": tracker.vendor_priced_models(),
-            "call_records": call_records,
-            "warnings": warnings,
-            "disclaimer": investment_firm.DISCLAIMER,
-        }
+        result = build_run_result(memo, tracker, horizon=horizon, run_id=run_id)
 
         with _lock:
             _registry[run_id]["status"] = "done"
@@ -268,6 +165,7 @@ def create_run(body: RunRequest) -> Dict[str, Any]:
         "question": question,
         "profile": body.profile,
         "simple": body.simple,
+        "horizon": body.horizon,
         "created_at": _utcnow(),
         "result": None,
         "error": None,
@@ -281,7 +179,7 @@ def create_run(body: RunRequest) -> Dict[str, Any]:
 
     thread = threading.Thread(
         target=_run_worker,
-        args=(run_id, question, body.profile, body.simple),
+        args=(run_id, question, body.profile, body.simple, body.horizon),
         daemon=True,
         name=f"run-{run_id}",
     )
@@ -304,6 +202,7 @@ def list_runs() -> Dict[str, Any]:
                 "status": v["status"],
                 "question": v["question"],
                 "profile": v["profile"],
+                "horizon": v.get("horizon", "short"),
                 "created_at": v["created_at"],
             }
             for v in _registry.values()
@@ -326,6 +225,7 @@ def get_run(run_id: str) -> Dict[str, Any]:
         "question": entry["question"],
         "profile": entry["profile"],
         "simple": entry["simple"],
+        "horizon": entry.get("horizon", "short"),
         "created_at": entry["created_at"],
         "event_count": entry.get("event_seq", 0),
         "disclaimer": investment_firm.DISCLAIMER,
@@ -335,6 +235,37 @@ def get_run(run_id: str) -> Dict[str, Any]:
     if entry["status"] == "error":
         response["error"] = entry["error"]
     return response
+
+
+def completed_memo(run_id: str) -> Memo:
+    """Return the memo of a finished run (``KeyError`` unknown, ``RuntimeError`` unfinished)."""
+    with _lock:
+        entry = _registry.get(run_id)
+        if entry is None:
+            raise KeyError(run_id)
+        if entry["status"] != "done" or entry.get("memo") is None:
+            raise RuntimeError("run is not finished")
+        return entry["memo"]
+
+
+@router.get("/{run_id}/report.html")
+def run_report(run_id: str) -> HTMLResponse:
+    """Download the self-contained HTML report of a finished run."""
+    with _lock:
+        entry = _registry.get(run_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        result = entry.get("result")
+        if entry["status"] != "done" or result is None:
+            raise HTTPException(
+                status_code=409, detail="run is not finished; no report yet"
+            )
+    return HTMLResponse(
+        render_committee_report(result),
+        headers={
+            "Content-Disposition": f'attachment; filename="ic-report-{run_id}.html"'
+        },
+    )
 
 
 def _event_generator(run_id: str, after: int) -> Iterator[str]:

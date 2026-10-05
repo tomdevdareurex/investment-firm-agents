@@ -24,9 +24,10 @@ from .models import (
     DEFAULT_CHAT_MODEL,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_MAX_TOKENS,
+    REASONING_MIN_OUTPUT_TOKENS,
     is_claude,
-    is_gemini,
     is_gpt,
+    is_reasoning_model,
 )
 from .utils import PlaygroundError, extract_text, get_error_message, is_error
 
@@ -252,12 +253,13 @@ def _convert_messages_for_claude(messages: list) -> list:
 
 _DEFAULT_WEBSEARCH_FLAG = "web_search"
 
-# Gemini 2.5+ are "thinking" models: their hidden reasoning is billed against the
+# Reasoning models (Gemini 2.5+, GPT-5.x, o-series) bill hidden reasoning against the
 # same output budget as the visible reply, so a tight ``max_tokens`` can starve the
-# answer and truncate it mid-sentence (the salvage path then returns half a rationale).
-# Give Gemini enough headroom that reasoning + a complete reply both fit. This is only
-# a CAP raise, so non-thinking replies are unaffected and never cost more.
-_GEMINI_MIN_OUTPUT_TOKENS = 4096
+# answer — truncating it mid-sentence (Gemini) or returning empty text (GPT-5, e.g.
+# a 500-token debate turn). Give them enough headroom that reasoning + a complete
+# reply both fit. This is only a CAP raise, so short replies never cost more.
+# ``_GEMINI_MIN_OUTPUT_TOKENS`` is kept as a backwards-compatible alias.
+_GEMINI_MIN_OUTPUT_TOKENS = REASONING_MIN_OUTPUT_TOKENS
 
 
 def _apply_web_search(
@@ -406,10 +408,10 @@ def chat(
     if max_tokens is None and is_claude(model):
         max_tokens = DEFAULT_MAX_TOKENS
     if max_tokens is not None:
-        # Gemini reasoning eats the output budget — floor the cap so the visible
-        # answer isn't truncated by hidden thinking tokens (family logic stays here).
-        if is_gemini(model):
-            max_tokens = max(max_tokens, _GEMINI_MIN_OUTPUT_TOKENS)
+        # Reasoning eats the output budget — floor the cap so the visible answer
+        # isn't starved by hidden thinking tokens (family logic stays in llm/).
+        if is_reasoning_model(model):
+            max_tokens = max(max_tokens, REASONING_MIN_OUTPUT_TOKENS)
         payload["max_tokens"] = max_tokens
     if temperature is not None:
         payload["temperature"] = temperature

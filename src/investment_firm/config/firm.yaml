@@ -8,37 +8,37 @@ default_profile: balanced
 
 profiles:
   budget:        # minimise spend — for learning, iterating, dry runs (no Opus)
-    WORKER:    [gemini-2.5-flash, claude-4.5-haiku]
-    SENIOR:    [gpt-4.1-mini, gemini-2.5-flash]
-    AUTHORITY: [claude-4.5-sonnet, gpt-4.1]
-    HEAD:      [claude-4.6-sonnet]
+    WORKER:    [gemini-3.8-flash, claude-4.5-haiku]
+    SENIOR:    [gpt-5.4-mini, gemini-3.8-flash]
+    AUTHORITY: [claude-5.5-sonnet, gpt-5.6-terra]
+    HEAD:      [claude-5.5-sonnet]
     web_search_max_uses: 1
     max_parallel: 3
-    run_token_budget: 60000
+    run_token_budget: 100000
     max_debate_rounds: 1         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
 
-  balanced:      # DEFAULT — Opus 4.8 only where it counts
-    WORKER:    [claude-4.5-haiku, gemini-2.5-flash]
-    SENIOR:    [claude-4.6-sonnet, gpt-4.1, gemini-2.5-pro]
-    AUTHORITY: [claude-4.7-opus, gpt-5.4]
-    HEAD:      [claude-4.8-opus]
+  balanced:      # DEFAULT — Opus 5.5 only where it counts
+    WORKER:    [claude-4.5-haiku, gemini-3.8-flash]
+    SENIOR:    [claude-5.5-sonnet, gpt-5.6-terra, gemini-3.1-pro]
+    AUTHORITY: [claude-5.5-opus, gpt-5.6-terra]
+    HEAD:      [claude-5.5-opus]
     web_search_max_uses: 3
     max_parallel: 5
-    run_token_budget: 150000
+    run_token_budget: 300000
     max_debate_rounds: 2         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
 
   premium:       # max quality — the "one higher"
-    WORKER:    [claude-4.6-sonnet, gpt-4.1, gemini-2.5-pro]
-    SENIOR:    [claude-4.7-opus, gpt-5.4, gemini-3.1-pro-preview]
-    AUTHORITY: [claude-4.8-opus, gpt-5.5]
-    HEAD:      [claude-4.8-opus]
+    WORKER:    [claude-5.5-sonnet, gpt-5.6-terra, gemini-3.1-pro]
+    SENIOR:    [claude-5.5-opus, gpt-5.6-terra, gemini-3.1-pro]
+    AUTHORITY: [claude-5.5-opus, gpt-5.6-terra]
+    HEAD:      [claude-5.5-opus]
     web_search_max_uses: 5
     max_parallel: 8
     run_token_budget: 400000
     max_debate_rounds: 3         # bull/bear rounds (0 disables the debate)
-    cio_cross_check: true        # CIO ruling cross-checked by gpt-5.5
+    cio_cross_check: true        # CIO ruling cross-checked by a GPT-family model
 
 # ---------------------------------------------------------------------------
 # Data sources (free-only defaults; provenance mandatory).
@@ -181,8 +181,7 @@ roles:
   bull_researcher:
     group: research
     tier: SENIOR
-    model: gpt-5.5           # deliberate high-tier debate pin overriding the profile;
-                             # gpt-5.5 only exists in premium tier lists, hence explicit pin
+    model: gpt-5.6-terra     # deliberate high-tier debate pin overriding the profile
                              # (adversarial diversity: bull=GPT vs bear=Claude)
     mandate: >
       Bull researcher — in the investment debate, build the strongest evidence-based
@@ -191,7 +190,7 @@ roles:
   bear_researcher:
     group: research
     tier: SENIOR
-    model: claude-4.8-opus   # deliberate high-tier debate pin overriding the profile
+    model: claude-5.5-opus   # deliberate high-tier debate pin overriding the profile
                              # (adversarial diversity: bear=Claude vs bull=GPT)
     mandate: >
       Bear researcher — in the investment debate, build the strongest evidence-based

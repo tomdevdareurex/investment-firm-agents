@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import re
 import time
 from typing import List, Optional
 
@@ -27,8 +28,10 @@ from ..llm.costs import RunTracker
 from ..llm.utils import (
     extract_text,
     extract_usage,
+    finish_reason,
     get_error_message,
     is_completion_error,
+    is_truncated,
 )
 from . import errors, events
 from .agent import _extract_json_block
@@ -43,8 +46,25 @@ from .roster import RoleSpec
 from .schemas import AnalystView, DebateTurn
 
 # Rough output cap per debate turn; also used for the budget pre-check.
-_TURN_MAX_TOKENS = 500
-_JUDGE_MAX_TOKENS = 400
+_TURN_MAX_TOKENS = 1200
+_JUDGE_MAX_TOKENS = 800
+# An empty or cut-off reply is retried once with this multiple of the cap.
+_RETRY_CAP_FACTOR = 4
+
+
+def debate_token_estimate(max_rounds: int, input_tokens: int) -> int:
+    """Worst-case-ish token estimate for a whole debate (turns + judge).
+
+    ``input_tokens`` is the size of the shared prompt (briefing + analyst views +
+    scaffolding); each turn re-sends it plus the growing transcript. Used by the
+    orchestrator to reserve budget before the analysts run.
+    """
+    turns = max(0, 2 * int(max_rounds))
+    if turns == 0:
+        return 0
+    per_turn = _TURN_MAX_TOKENS + input_tokens
+    judge = _JUDGE_MAX_TOKENS + input_tokens + turns * _TURN_MAX_TOKENS
+    return turns * per_turn + judge
 
 
 @dataclasses.dataclass
@@ -88,11 +108,16 @@ def _turn(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    start = time.perf_counter()
-    resp = client.chat(spec.model, messages, max_tokens=_TURN_MAX_TOKENS)
-    elapsed = time.perf_counter() - start
-    inp, out, _ = extract_usage(resp)
-    tracker.record(label, spec.model, inp, out, elapsed)
+
+    def _call(cap: int) -> dict:
+        start = time.perf_counter()
+        resp = client.chat(spec.model, messages, max_tokens=cap)
+        elapsed = time.perf_counter() - start
+        inp, out, _ = extract_usage(resp)
+        tracker.record(label, spec.model, inp, out, elapsed)
+        return resp
+
+    resp = _call(_TURN_MAX_TOKENS)
     if is_completion_error(resp):
         detail = get_error_message(resp) or "unknown error"
         return DebateTurn(
@@ -102,12 +127,27 @@ def _turn(
             error=True,
         )
     text = extract_text(resp, strict=False).strip()
+    reason = finish_reason(resp)
+    if not text or is_truncated(resp):
+        # Empty (hidden reasoning ate the budget) or cut off: retry once with a
+        # bigger cap if the budget allows; otherwise keep whatever we already have.
+        retry_cap = _TURN_MAX_TOKENS * _RETRY_CAP_FACTOR
+        if not tracker.would_exceed(retry_cap + _estimate_tokens(system, user)):
+            retry = _call(retry_cap)
+            if not is_completion_error(retry):
+                retry_text = extract_text(retry, strict=False).strip()
+                reason = finish_reason(retry) or reason
+                if retry_text:
+                    text = retry_text
     if not text:
         # A successful call with empty text is a failure, not a budget skip.
         return DebateTurn(
             speaker=label,
             model=spec.model,
-            text=errors.error_summary(f"{label} turn", "model returned empty text"),
+            text=errors.error_summary(
+                f"{label} turn",
+                f"model returned empty text (finish_reason={reason or 'unknown'})",
+            ),
             error=True,
         )
     return DebateTurn(speaker=label, model=spec.model, text=text)
@@ -221,12 +261,16 @@ def _judge(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    start = time.perf_counter()
-    resp = client.chat(judge_spec.model, messages, max_tokens=_JUDGE_MAX_TOKENS)
-    elapsed = time.perf_counter() - start
-    inp, out, _ = extract_usage(resp)
-    tracker.record("debate judge", judge_spec.model, inp, out, elapsed)
 
+    def _call(cap: int) -> dict:
+        start = time.perf_counter()
+        resp = client.chat(judge_spec.model, messages, max_tokens=cap)
+        elapsed = time.perf_counter() - start
+        inp, out, _ = extract_usage(resp)
+        tracker.record("debate judge", judge_spec.model, inp, out, elapsed)
+        return resp
+
+    resp = _call(_JUDGE_MAX_TOKENS)
     if is_completion_error(resp):
         detail = get_error_message(resp) or "unknown error"
         return (
@@ -235,19 +279,68 @@ def _judge(
         )
 
     text = extract_text(resp, strict=False)
-    block = _extract_json_block(text)
-    if block is not None:
-        try:
-            data = json.loads(block)
-            stance = str(data.get("stance", "NEUTRAL")).upper()
-            summary = str(data.get("summary", "")).strip()
-            if stance not in {"BULLISH", "BEARISH", "NEUTRAL"}:
-                stance = "NEUTRAL"
-            return summary or text.strip()[:600], stance
-        except (ValueError, TypeError):
-            pass
+    reason = finish_reason(resp)
+    parsed = _parse_verdict(text)
+    if parsed is not None:
+        return parsed
+
+    if not text.strip() or is_truncated(resp):
+        # Empty or cut-off verdict: retry once with a bigger cap, budget permitting.
+        retry_cap = _JUDGE_MAX_TOKENS * _RETRY_CAP_FACTOR
+        if not tracker.would_exceed(retry_cap + _estimate_tokens(system, user)):
+            retry = _call(retry_cap)
+            if not is_completion_error(retry):
+                retry_text = extract_text(retry, strict=False)
+                reason = finish_reason(retry) or reason
+                parsed = _parse_verdict(retry_text)
+                if parsed is not None:
+                    return parsed
+                if retry_text.strip():
+                    text = retry_text
+
+    salvaged = _salvage_verdict(text)
+    if salvaged is not None:
+        return salvaged
     return (
-        errors.error_summary("debate judge", "unparseable verdict JSON")
+        errors.error_summary(
+            "debate judge",
+            f"unparseable verdict JSON (finish_reason={reason or 'unknown'})",
+        )
         + f" Raw output (truncated): {text.strip()[:400]}",
         "ERROR",
     )
+
+
+def _parse_verdict(text: str) -> Optional[tuple[str, str]]:
+    """Parse a complete verdict object into ``(summary, stance)``, else ``None``."""
+    block = _extract_json_block(text)
+    if block is None:
+        return None
+    try:
+        data = json.loads(block)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stance = str(data.get("stance", "NEUTRAL")).upper()
+    summary = str(data.get("summary", "")).strip()
+    if stance not in {"BULLISH", "BEARISH", "NEUTRAL"}:
+        stance = "NEUTRAL"
+    return summary or text.strip()[:600], stance
+
+
+def _salvage_verdict(text: str) -> Optional[tuple[str, str]]:
+    """Pull a stance (required) and partial summary from a cut-off verdict JSON."""
+    stance_match = re.search(
+        r'"stance"\s*:\s*"\s*(BULLISH|BEARISH|NEUTRAL)\s*"', text, re.IGNORECASE
+    )
+    if not stance_match:
+        return None
+    summary_match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)', text, re.DOTALL)
+    partial = (
+        summary_match.group(1).replace('\\"', '"').replace("\\n", " ").strip()
+        if summary_match
+        else ""
+    )
+    summary = f"{partial} (truncated)" if partial else "(summary truncated)"
+    return summary, stance_match.group(1).upper()

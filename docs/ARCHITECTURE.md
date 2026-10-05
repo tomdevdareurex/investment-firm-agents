@@ -37,11 +37,23 @@ core/
       │
   agent.py       tool-using observe-think-act loop → AnalystView
       │
+  horizon.py     short/medium/long definitions + frame_question()
+  glossary.py    plain-language GLOSSARY, find_terms(), METHODOLOGY
   orchestrator.py   briefing → plan → analysts → CIO synthesis → Memo
+  portfolio_advisor.py   one advisor LLM call over a portfolio digest
+
+data/
+  risk.py, indicators.py, backtest.py, technicals.py   pure compute
+  portfolio.py   portfolio parsing, analytics, rebalancing, strategy overlays
 
 interfaces/
-  cli.py         argparse CLI (M0 + committee run)
+  cli.py         argparse CLI (M0 + committee run, --horizon, --report)
+  report/        payload.py (build_run_result), _html.py (escaping, SVG),
+                 html.py (committee report), portfolio_html.py — no fastapi
   web/app.py     FastAPI preview UI (zero LLM calls for GET /api/preview)
+  web/runs.py, market.py, portfolio.py (+ market_data.py, portfolio_data.py)
+  web/static/    index.html, app.js, memo.js, charts.js, portfolio.js,
+                 app.css, extras.css (portfolio.js loads after app.js)
 ```
 
 Dependency direction: each layer imports only from layers above or from the
@@ -53,7 +65,16 @@ same level. The `llm/` layer has no knowledge of `core/`; `core/` depends on
 ## The run pipeline
 
 ```
-run_committee(question, profile, simple)
+question + horizon → frame_question → briefing → plan → analysts → debate
+  → Synthesis → Memo → build_run_result → UI tabs / HTML report
+```
+
+The horizon reaches agents only through the framed question (marker
+`Investment horizon: `); `Memo.question` stays the raw question and
+`Memo.horizon` records the key.
+
+```
+run_committee(question, profile, simple, horizon)
   │
   ├─ 1. Briefing (full mode only)
   │      research_librarian Agent uses data tools (yfinance / ECB / EDGAR /
@@ -84,7 +105,9 @@ run_committee(question, profile, simple)
   │        (c) Budget exhausted mid-loop → agent stops early, emits fallback view.
   │
   └─ 4. CIO synthesis
-         Receives briefing + all AnalystViews → returns recommendation + summary.
+         Receives briefing + all AnalystViews → returns a Synthesis dataclass
+         (recommendation, headline, summary, key_reasons, main_risks,
+         what_to_watch, confidence) written in plain language.
          TOKENS SPENT HERE.
          → Memo returned to caller.
 ```
@@ -198,7 +221,7 @@ the provider.
 
 **Selection.** `backends.current_backend()`: runtime override
 (`backends.set_backend`, used by the web UI `POST /api/backend`) →
-`IFA_LLM_BACKEND` env (read lazily) → `playground`. The override lives behind a
+`IFA_LLM_BACKEND` env (read lazily) → `databricks`. The override lives behind a
 `threading.Lock` because web runs execute in daemon threads.
 
 **Dispatch.** The first thing `client.chat()` does is check the active backend;
@@ -341,14 +364,28 @@ all roles regardless of model family.
 GET  /                   Serves static/index.html (no tokens)
 GET  /api/health         {"version": ..., "disclaimer": ...}
 GET  /api/profiles       {profiles: {budget: {WORKER: [...], ...}, ...}}
-GET  /api/preview        {profile, simple, run_token_budget, roles, disclaimer}
+GET  /api/preview        {profile, simple, horizon, horizon_label, run_token_budget,
+                          roles, disclaimer}
                          — uses ONLY roster functions, zero LLM/API calls
-POST /api/runs           Start a committee run; returns {run_id, status} (202)
-GET  /api/runs           List all runs: [{run_id, status, question, profile, created_at}]
-GET  /api/runs/{run_id}  Poll a run; includes result envelope when status==done:
-                           {recommendation, summary, profile, question, briefing,
-                            views, sources, cost_summary, call_records, warnings,
-                            disclaimer}
+POST /api/runs           Start a committee run ({question, profile, simple, horizon});
+                         returns {run_id, status} (202)
+GET  /api/runs           List all runs: [{run_id, status, question, profile, horizon, created_at}]
+GET  /api/runs/{run_id}  Poll a run; includes result envelope when status==done
+                         (built by interfaces/report/payload.build_run_result):
+                           {recommendation, headline, summary, key_reasons,
+                            main_risks, what_to_watch, confidence, horizon,
+                            views, sources, costs, warnings, glossary,
+                            report_url, disclaimer, ...}
+GET  /api/runs/{run_id}/report.html
+                         Self-contained HTML report (attachment); 409 until done
+POST /api/portfolio/analyze
+                         Parse upload + fetch prices + analytics/backtests (no LLM)
+GET  /api/portfolio/{id} Stored analysis (+ suggestion if requested)
+GET  /api/portfolio/{id}/report.html
+                         Portfolio HTML report (attachment)
+POST /api/portfolio/{id}/suggest
+                         One advisor LLM call (spends tokens); optional run_id
+                         seeds the committee memo as market context
 GET  /api/backend        Active LLM backend + capabilities + degradation note
 POST /api/backend        Switch backend at runtime ({"backend": "databricks"});
                          unknown names → 400

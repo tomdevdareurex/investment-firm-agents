@@ -2,11 +2,12 @@
 
 Backends
 --------
-* ``playground`` — Deutsche Börse AI Playground (default; raw HTTP in ``client.py``).
-* ``databricks`` — Databricks model serving via the SDK (``databricks_backend.py``).
+* ``playground`` — Deutsche Börse AI Playground (raw HTTP in ``client.py``).
+* ``databricks`` — Databricks model serving via the SDK (``databricks_backend.py``);
+  the default.
 
 Selection precedence: :func:`set_backend` runtime override → ``IFA_LLM_BACKEND`` env
-(read lazily) → ``playground``. Core code never branches on the provider — it asks
+(read lazily) → ``databricks``. Core code never branches on the provider — it asks
 :func:`supports_web_search` / :func:`supports_tools` and lets :func:`map_model`
 translate logical model names into backend-specific ones.
 """
@@ -82,7 +83,7 @@ def normalize(name: object) -> str:
 
 
 def current_backend() -> str:
-    """Return the active backend: runtime override → ``IFA_LLM_BACKEND`` → playground."""
+    """Return the active backend: runtime override → ``IFA_LLM_BACKEND`` → databricks."""
     with _lock:
         override = _override
     if override:
