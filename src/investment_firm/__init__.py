@@ -6,7 +6,7 @@ to act on. It never executes orders or connects to a broker/exchange/wallet.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 DISCLAIMER = (
     "Decision-support only. Not investment advice. No orders are executed; a human "

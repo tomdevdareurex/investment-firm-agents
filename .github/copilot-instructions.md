@@ -1,10 +1,11 @@
 ## graphify
 
 For any question about this repo's architecture, structure, components, or how to add/modify/find
-code, your first action should be `graphify query "<question>"` when `graphify-out/graph.json`
-exists. Use `graphify path "<A>" "<B>"` for relationship questions and `graphify explain "<concept>"`
-for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
-report or raw grep output.
+code, your first action should be `.venv/Scripts/python.exe -m graphify query "<question>"` when
+`graphify-out/graph.json` exists. Use `... -m graphify path "<A>" "<B>"` for relationship questions and
+`... -m graphify explain "<concept>"` for focused-concept questions. These return a scoped subgraph, usually
+much smaller than the full report or raw grep output. Never call the bare `graphify` command: group policy
+blocks `.venv/Scripts/graphify.exe` on this laptop, so it fails with "not recognized" / "blocked by group policy".
 
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.

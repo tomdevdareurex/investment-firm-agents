@@ -349,6 +349,7 @@
         }),
       });
       currentId = data.analysis_id;
+      showUsePortfolio(data);
       renderAll(data);
       showTab('overview');
       setStatus(`Done — ${((data.analysis || {}).positions || []).length} holdings analysed.`, 'status-done');
@@ -390,6 +391,26 @@
       button.disabled = false;
     }
   }
+
+  function showUsePortfolio(data) {
+    const row = document.getElementById('use-portfolio-row');
+    if (!row) return;
+    const positions = (data.analysis || {}).positions || [];
+    const summary = positions
+      .slice(0, 6)
+      .map((p) => `${Math.round(Number(p.weight) * 1000) / 10}% ${p.ticker}`)
+      .join(' · ');
+    document.getElementById('use-portfolio-summary').textContent =
+      `(${summary}${positions.length > 6 ? ' …' : ''})`;
+    document.getElementById('use-portfolio').checked = true;
+    row.hidden = false;
+  }
+
+  // Read by app.js startRun(): the analysis to attach to a committee run, or null.
+  window.ifaPortfolioForRun = function () {
+    const box = document.getElementById('use-portfolio');
+    return currentId && box && box.checked ? currentId : null;
+  };
 
   function updatePeriodHint(horizon) {
     const hint = document.getElementById('portfolio-period-hint');

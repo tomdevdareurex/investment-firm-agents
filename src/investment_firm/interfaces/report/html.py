@@ -56,6 +56,19 @@ def _cover(result: Dict[str, Any]) -> str:
             ("Generated", result.get("generated_at") or _NA),
         )
     )
+    notes = ""
+    if rec == "ERROR" and result.get("failure_reason"):
+        notes += (
+            f"<p><strong>Why there is no ruling:</strong> "
+            f"{_esc(result['failure_reason'])}</p>"
+        )
+    if result.get("synth_note"):
+        notes += f'<p class="note">{_esc(result["synth_note"])}</p>'
+    if result.get("portfolio_id"):
+        notes += (
+            '<p class="note">Based on the uploaded portfolio analysis '
+            f"{_esc(result['portfolio_id'])}</p>"
+        )
     return (
         '<section id="cover">\n<h1>Investment Committee Report</h1>\n'
         f'<p class="meta">{meta}</p>\n'
@@ -63,6 +76,7 @@ def _cover(result: Dict[str, Any]) -> str:
         f"{_esc(result.get('question') or _NA)}</p>"
         f"<p>{_badge(rec, _REC_KIND.get(rec, 'neu'))} "
         f"{_esc(result.get('recommendation_plain') or '')}</p>"
+        f"{notes}"
         f"<p><strong>Confidence:</strong> {_dots(result.get('confidence', 0))}</p>"
         f'<p class="note">Final ruling by {_esc(str(synth).upper())}{_esc(model)}</p>'
         "</div>\n</section>"
@@ -156,6 +170,86 @@ def _debate(result: Dict[str, Any]) -> str:
             f"<p>{_esc(result.get('debate_summary'))}</p>"
         )
     return _section("debate", "Bull vs Bear debate", cards)
+
+
+def _vote(result: Dict[str, Any]) -> str:
+    vote = result.get("vote")
+    if not isinstance(vote, dict) or not vote:
+        return ""
+    totals = vote.get("totals") or {}
+    totals_txt = " | ".join(
+        f"{_esc(k)} {_esc(_num(v))}" for k, v in totals.items()
+    )
+    veto = vote.get("veto")
+    veto_txt = (
+        f"VETO raised by {_esc(', '.join(str(r) for r in vote.get('veto_by') or []))}"
+        if veto
+        else "no veto"
+    )
+    head = (
+        f"<p><strong>Outcome:</strong> {_esc(vote.get('winner'))} "
+        f"(margin {_esc(_num(vote.get('margin')))}) — {veto_txt}. "
+        f"{_esc(vote.get('participants'))} voting, "
+        f"{len(vote.get('excluded') or [])} excluded.</p>"
+        f'<p class="note">Totals: {totals_txt}. Rule: {_esc(vote.get("rule"))}. '
+        "Advisory only — the CIO ruling above remains the recommendation.</p>"
+    )
+    rows = "".join(
+        "<tr>"
+        f"<td>{_esc(r.get('role'))}</td><td>{_esc(r.get('stance'))}</td>"
+        f"<td>{_esc(r.get('conviction'))}</td><td>{_esc(_num(r.get('weight')))}</td>"
+        f"<td>{'yes' if r.get('counted') else 'no'}</td><td>{_esc(r.get('note') or '')}</td>"
+        "</tr>"
+        for r in vote.get("rows") or []
+        if isinstance(r, dict)
+    )
+    table = (
+        "<table><thead><tr><th>Role</th><th>Stance</th><th>Conviction</th>"
+        f"<th>Weight</th><th>Counted</th><th>Note</th></tr></thead><tbody>{rows}</tbody></table>"
+        if rows
+        else ""
+    )
+    return _section("vote", "Committee vote (advisory)", head + table)
+
+
+def _cross_check(result: Dict[str, Any]) -> str:
+    cc = result.get("cross_check")
+    if not isinstance(cc, dict) or not cc:
+        return ""
+    status = cc.get("status")
+    model = _esc(cc.get("model") or "")
+    if status == "ok":
+        verdict = "agrees" if cc.get("agrees") else "disagrees"
+        body = (
+            f"<p><strong>{verdict.capitalize()}</strong> with the CIO ruling "
+            f"(reviewer: {model}).</p>"
+        )
+        note = str(cc.get("note") or "").strip()
+        if note:
+            body += f"<p>{_esc(note)}</p>"
+        concerns = [str(c) for c in cc.get("concerns") or [] if str(c).strip()]
+        if concerns:
+            body += "<ul>" + "".join(f"<li>{_esc(c)}</li>" for c in concerns) + "</ul>"
+    elif status == "error":
+        body = (
+            f"<p>Second opinion unavailable (reviewer: {model}) — "
+            f"{_esc(cc.get('reason') or '')}</p>"
+        )
+    else:
+        return ""
+    body += (
+        '<p class="note">Advisory only — a different model family re-read the views '
+        "and the ruling; it never changes the recommendation.</p>"
+    )
+    return _section("cross-check", "Second opinion (CIO cross-check)", body)
+
+
+def _num(value: Any) -> str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(f)) if f.is_integer() else f"{f:g}"
 
 
 def _briefing(result: Dict[str, Any]) -> str:
@@ -280,6 +374,8 @@ def render_committee_report(result: Dict[str, Any]) -> str:
             _section("watch", "What to watch", _list(result.get("what_to_watch"))),
             _specialists(result),
             _debate(result),
+            _vote(result),
+            _cross_check(result),
             _briefing(result),
             _sources(result),
             _warnings(result),

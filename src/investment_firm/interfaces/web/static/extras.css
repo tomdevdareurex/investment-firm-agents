@@ -57,6 +57,8 @@ fieldset.field legend {
 /* ── Portfolio controls ── */
 .portfolio-controls .field-row { flex-wrap: wrap; align-items: flex-end; }
 .portfolio-controls .checkbox-label { margin-right: var(--space-md); }
+#use-portfolio-row { margin-top: var(--space-sm); }
+#use-portfolio-row[hidden] { display: none; }
 
 .portfolio-controls input[type="text"],
 .portfolio-controls input[type="number"],
@@ -98,6 +100,20 @@ fieldset.field legend {
   margin: var(--space-xs) 0 var(--space-md);
 }
 
+.memo-note {
+  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
+  border-left: 3px solid var(--color-warn);
+  color: var(--color-text);
+  padding: var(--space-xs) var(--space-sm);
+  margin: var(--space-sm) 0;
+}
+
+.memo-note-detail {
+  font-size: 0.85rem;
+  margin-top: var(--space-xs);
+  opacity: 0.85;
+}
+
 .memo-headline {
   font-size: 1.25rem;
   line-height: 1.35;
@@ -122,6 +138,13 @@ fieldset.field legend {
 }
 
 .memo-glossary summary { cursor: pointer; color: var(--color-text-muted); }
+.memo-vote-outcome { font-weight: 600; }
+.memo-vote-rows summary { cursor: pointer; color: var(--color-text-muted); }
+.memo-vote-skipped { color: var(--color-text-muted); font-style: italic; }
+.memo-cross-check { border-left: 3px solid var(--color-border, #ccc); padding-left: var(--space-sm); }
+.memo-cc-agree strong { color: var(--color-success, #2e7d32); }
+.memo-cc-disagree strong { color: var(--color-danger, #c62828); }
+.memo-cc-error { color: var(--color-text-muted); font-style: italic; }
 .glossary-list dt { font-weight: 600; margin-top: var(--space-sm); }
 .glossary-list dd { margin: 2px 0 0; color: var(--color-text-muted); }
 
@@ -131,6 +154,29 @@ fieldset.field legend {
 }
 
 #btn-download-report { text-decoration: none; margin-left: auto; }
+
+/* ── Forecast cone (charts panel, forecast.js) ── */
+.forecast-badge {
+  margin-left: var(--space-xs);
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+}
+.forecast-badge:empty { display: none; }
+.chart-forecast-info { margin-top: var(--space-sm); }
+.chart-forecast-info:empty { display: none; }
+.forecast-info,
+.forecast-info--error {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+  word-break: break-word;
+}
+.forecast-info--error { color: var(--color-warn); }
 
 /* ── Portfolio panel ── */
 #portfolio-panel .btn { text-decoration: none; }

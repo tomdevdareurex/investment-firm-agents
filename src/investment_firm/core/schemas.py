@@ -6,7 +6,7 @@ milestones extend them with provenance/SOURCES (M1.5) and the full committee vot
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import Any, Dict, List, Literal
 
 from pydantic import BaseModel, Field
 
@@ -108,6 +108,9 @@ class Memo(BaseModel):
     question: str
     profile: str = ""
     horizon: str = Field(default="", description="short|medium|long")
+    portfolio_id: str = Field(
+        default="", description="uploaded portfolio analysis used as user context"
+    )
     recommendation: Recommendation = "HOLD"
     summary: str = ""
     headline: str = ""
@@ -136,11 +139,28 @@ class Memo(BaseModel):
     synth_model: str = Field(
         default="", description="model that issued the final recommendation"
     )
+    synth_note: str = Field(
+        default="", description="fallback/failure note for the final ruling"
+    )
+    failure_reason: str = Field(
+        default="", description="why the final ruling failed (ERROR only)"
+    )
     debate_judge_role: str = Field(
         default="", description="role that judged the debate (set only when it ran)"
     )
     debate_judge_model: str = Field(
         default="", description="model that judged the debate (set only when it ran)"
+    )
+    vote: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="committee vote tally (core/vote.VoteResult.to_dict); {} if not run",
+    )
+    cross_check: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "independent second opinion on the ruling (core/cross_check); "
+            "status ok|skipped|error; {} if not attempted"
+        ),
     )
     sources: List[str] = Field(default_factory=list)
     web_sources: List[Source] = Field(
@@ -189,6 +209,8 @@ class Memo(BaseModel):
             lines.append(f"RECOMMENDATION: {self.recommendation}{attribution}")
         if self.headline:
             lines.append(f"Headline: {self.headline.strip()}")
+        if self.synth_note:
+            lines.append(f"Note: {self.synth_note}")
         lines.append("")
         lines.append("Summary:")
         lines.append(f"  {self.summary.strip()}")
@@ -205,6 +227,29 @@ class Memo(BaseModel):
         if self.confidence > 0:
             lines.append("")
             lines.append(f"Confidence: {self.confidence}/5")
+        if self.vote:
+            winner = str(self.vote.get("winner", "TIE"))
+            veto_by = self.vote.get("veto_by") or []
+            veto = f"veto by {', '.join(veto_by)}" if veto_by else "no veto"
+            participants = self.vote.get("participants", 0)
+            lines.append("")
+            lines.append(
+                f"Committee vote: {winner} ({participants} voting, {veto}) — advisory"
+            )
+        if self.cross_check and self.cross_check.get("status") == "ok":
+            model = self.cross_check.get("model", "")
+            verdict = "agrees" if self.cross_check.get("agrees") else "DISAGREES"
+            lines.append("")
+            lines.append(
+                f"Second opinion ({model}): {verdict} with the ruling — advisory"
+            )
+            note = str(self.cross_check.get("note") or "").strip()
+            if note:
+                lines.append(f"  {note}")
+            for concern in _clean_display_list(
+                [str(c) for c in self.cross_check.get("concerns") or []]
+            ):
+                lines.append(f"  - concern: {concern}")
         lines.append("")
         lines.append("-" * 72)
         lines.append("Analyst views:")

@@ -24,16 +24,6 @@
       </p>
 
       <form id="preview-form" autocomplete="off">
-        <div class="field">
-          <label for="question">Investment question</label>
-          <textarea
-            id="question"
-            name="question"
-            rows="3"
-            placeholder="e.g. Should we increase duration in the EUR rates book given the macro backdrop?"
-          ></textarea>
-        </div>
-
         <fieldset class="field field--horizon" id="horizon-group">
           <legend>Investment horizon</legend>
           <label class="radio-label"><input type="radio" name="horizon" value="short" checked /> <span>Short term (≤ 1 year)</span></label>
@@ -93,6 +83,20 @@
             </button>
           </div>
         </fieldset>
+
+        <div class="field">
+          <label for="question">Investment question</label>
+          <textarea
+            id="question"
+            name="question"
+            rows="3"
+            placeholder="e.g. Should I keep rebalancing my portfolio monthly? / Should we increase duration in the EUR rates book?"
+          ></textarea>
+          <label class="checkbox-label" id="use-portfolio-row" hidden>
+            <input type="checkbox" id="use-portfolio" checked />
+            <span>Use analysed portfolio in the committee run <span id="use-portfolio-summary" class="field-help"></span></span>
+          </label>
+        </div>
 
         <div class="field-row">
           <div class="field">
@@ -182,6 +186,24 @@
             </label>
           </div>
           <div class="field field--checkbox">
+            <label class="checkbox-label" title="Experimental statistical range of future closes (TimesFM when installed, else random-walk baseline). Not a prediction.">
+              <input type="checkbox" id="chart-forecast" />
+              <span>Forecast cone <small id="chart-forecast-badge" class="forecast-badge"></small></span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label" title="ARIMA(1,1,1) on the log price (ARMA(1,1) on log returns) with constant error variance. Statistical range, not a prediction.">
+              <input type="checkbox" id="chart-arima" />
+              <span>ARIMA(1,1,1)</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
+            <label class="checkbox-label" title="Model the ARIMA errors with GARCH(1,1) conditional variance (fitted jointly). Turns ARIMA on.">
+              <input type="checkbox" id="chart-garch" />
+              <span>+ GARCH(1,1)</span>
+            </label>
+          </div>
+          <div class="field field--checkbox">
             <label class="checkbox-label">
               <input type="checkbox" id="chart-sma20" checked />
               <span>SMA 20</span>
@@ -231,6 +253,8 @@
 
       <div id="chart-status" class="chart-status" role="status" aria-live="polite"></div>
       <div id="chart-container" class="chart-container" aria-label="Price chart"></div>
+      <div id="chart-forecast-info" class="chart-forecast-info" aria-live="polite"></div>
+      <div id="chart-arima-info" class="chart-forecast-info" aria-live="polite"></div>
       <div id="chart-cache" class="chart-cache" aria-live="polite"></div>
       <div id="chart-technicals" class="chart-technicals" aria-label="Technical summary"></div>
     </section>
@@ -297,6 +321,7 @@
   <script src="/static/memo.js"></script>
   <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
   <script src="/static/charts.js"></script>
+  <script src="/static/forecast.js"></script>
   <script src="/static/portfolio.js"></script>
 </body>
 </html>

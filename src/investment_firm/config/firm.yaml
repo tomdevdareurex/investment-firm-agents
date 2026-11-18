@@ -17,6 +17,7 @@ profiles:
     run_token_budget: 100000
     max_debate_rounds: 1         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
+    fallback_on_error: true      # retry a failed seat once on another model of its tier
 
   balanced:      # DEFAULT — Opus 5.5 only where it counts
     WORKER:    [claude-4.5-haiku, gemini-3.8-flash]
@@ -28,6 +29,7 @@ profiles:
     run_token_budget: 300000
     max_debate_rounds: 2         # bull/bear rounds (0 disables the debate)
     cio_cross_check: false
+    fallback_on_error: true      # retry a failed seat once on another model of its tier
 
   premium:       # max quality — the "one higher"
     WORKER:    [claude-5.5-sonnet, gpt-5.6-terra, gemini-3.1-pro]
@@ -39,6 +41,7 @@ profiles:
     run_token_budget: 400000
     max_debate_rounds: 3         # bull/bear rounds (0 disables the debate)
     cio_cross_check: true        # CIO ruling cross-checked by a GPT-family model
+    fallback_on_error: true      # retry a failed seat once on another model of its tier
 
 # ---------------------------------------------------------------------------
 # Data sources (free-only defaults; provenance mandatory).
@@ -272,4 +275,5 @@ committee:
   tally_rule: weighted_majority_of_stance
   tie_break: ic_chair
   veto_roles: [compliance, market_risk]    # a veto forces reject/modify
+  veto_min_conviction: 3                   # veto role must be BEARISH with conviction >= this
   cio_can_override_vote: true              # CIO may override, with documented rationale

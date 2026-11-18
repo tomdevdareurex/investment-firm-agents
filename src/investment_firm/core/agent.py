@@ -60,6 +60,21 @@ _REPAIR_PROMPT = (
     "below says — add no new facts or numbers. No prose, no code fences.\n\n"
     "ANALYSIS:\n{analysis}"
 )
+_EVIDENCE_CHARS = 4000  # cap on the tool-result digest fed to repair/fallback
+_EVIDENCE_ITEM_CHARS = 600
+_QUESTION_CHARS = 1500
+_FALLBACK_USER_CHARS = 8000
+_FALLBACK_INSTRUCTION = (
+    "Tools are no longer available. Answer now with ONLY the JSON object described "
+    "in your instructions. Use only the data above; if something is missing, say so "
+    "in key_risks instead of guessing. No prose, no code fences."
+)
+
+# Failure reasons (shown in the ERROR view / FALLBACK note).
+REASON_BUDGET = "token budget exhausted"
+REASON_TOOL_LOOP = "model kept calling tools instead of answering"
+REASON_EMPTY = "empty response"
+REASON_UNPARSEABLE = "unparseable JSON"
 
 
 def _estimate_input_tokens(messages: List[dict]) -> int:
@@ -173,6 +188,7 @@ class Agent:
         web_search: bool = False,
         web_search_max_uses: int = 3,
         repair: bool = True,
+        fallback_model: Optional[str] = None,
     ):
         self.spec = spec
         self.tools = tools
@@ -183,6 +199,8 @@ class Agent:
         # Convert a prose answer to JSON via one extra call. Roles whose output is
         # free prose by design (the librarian) turn this off and use ``last_text``.
         self.repair = repair
+        # Another model that gets one tool-free attempt when this seat fails.
+        self.fallback_model = fallback_model
         self.memory = ScratchMemory()
         # Final raw model text of the last run() (before parsing); "" if none.
         self.last_text = ""
@@ -220,10 +238,14 @@ class Agent:
         grounded_calls = 0
         data_gaps: List[tuple] = []  # (tool_name, structured failure reason)
         citations: List[dict] = []
+        evidence: List[str] = []  # successful tool results, for repair/fallback
+        budget_hit = False
+        still_calling_tools = False
         for step in range(self.max_steps):
             # Budget guard: stop spending if the run budget would be exceeded.
             if tracker is not None and tracker.would_exceed(self.max_tokens):
                 self.memory.remember("stopped early: run token budget reached")
+                budget_hit = True
                 break
 
             start = time.perf_counter()
@@ -269,11 +291,15 @@ class Agent:
                         truncated = is_truncated(resp2)
                         break
                     err_msg = get_error_message(resp2) or err_msg
-                # Both error (or no tools) — explicit ERROR view, never fake analysis.
-                # Route through grounding so DATA GAP risks/citations gathered
-                # before the failure survive on the ERROR view.
+                # Both error (or no tools): try another model, else an explicit
+                # ERROR view — never fake analysis. Grounding keeps DATA GAP risks
+                # and citations gathered before the failure.
+                fallback = self._fallback(
+                    user, evidence, tracker, f"API error: {err_msg}"
+                )
                 error_view = self._apply_grounding(
-                    errors.api_error_view(self.spec.name, self.spec.model, err_msg),
+                    fallback
+                    or errors.api_error_view(self.spec.name, self.spec.model, err_msg),
                     grounded_calls,
                     data_gaps,
                     citations,
@@ -327,6 +353,7 @@ class Agent:
                         )
                     else:
                         grounded_calls += 1
+                        evidence.append(f"{name}: {result[:_EVIDENCE_ITEM_CHARS]}")
                         events.safe_emit(
                             on_event,
                             events.TOOL_RESULT,
@@ -350,6 +377,7 @@ class Agent:
                     # Last step: nudge the model to answer in JSON next.
                     messages.append({"role": "user", "content": _LAST_STEP_REMINDER})
                     reminded = True
+                    still_calling_tools = True
                 continue  # observe results, loop again
 
             final_text = extract_text(resp, strict=False)
@@ -393,11 +421,16 @@ class Agent:
             if bigger.strip():
                 final_text = bigger
                 view = self._parse_or_none(final_text)
-        if view is None and self.repair and final_text.strip():
-            view = self._repair(final_text, tracker)
+        if view is None and self.repair and (final_text.strip() or evidence):
+            view = self._repair(
+                final_text, tracker, question=question, evidence=evidence
+            )
+        reason = _failure_reason(final_text, budget_hit, still_calling_tools)
+        if view is None:
+            view = self._fallback(user, evidence, tracker, reason)
         self.last_text = final_text
         if view is None:
-            view = self._parse(final_text)  # explicit ERROR view
+            view = self._parse(final_text, reason=reason)  # explicit ERROR view
         grounded = self._apply_grounding(view, grounded_calls, data_gaps, citations)
         self._emit_done(on_event, grounded)
         return grounded
@@ -409,14 +442,16 @@ class Agent:
         tracker: Optional[RunTracker],
         *,
         web_search: bool,
+        model: Optional[str] = None,
     ) -> Optional[dict]:
         """One tool-free follow-up call; ``None`` if the run budget forbids it."""
+        model = model or self.spec.model
         reserve = max_tokens + _estimate_input_tokens(messages)
         if tracker is not None and tracker.would_exceed(reserve):
             return None
         start = time.perf_counter()
         resp = client.chat(
-            self.spec.model,
+            model,
             messages,
             max_tokens=max_tokens,
             web_search=web_search,
@@ -426,7 +461,7 @@ class Agent:
         elapsed = time.perf_counter() - start
         if tracker is not None:
             inp, out, _ = extract_usage(resp)
-            tracker.record(self.spec.name, self.spec.model, inp, out, elapsed)
+            tracker.record(self.spec.name, model, inp, out, elapsed)
         return resp
 
     def _retry_bigger(self, messages: List[dict], tracker: Optional[RunTracker]) -> str:
@@ -440,21 +475,31 @@ class Agent:
         return extract_text(resp, strict=False)
 
     def _repair(
-        self, raw_text: str, tracker: Optional[RunTracker]
+        self,
+        raw_text: str,
+        tracker: Optional[RunTracker],
+        *,
+        question: str = "",
+        evidence: Optional[List[str]] = None,
     ) -> Optional[AnalystView]:
         """Convert a prose answer into the JSON view with one cheap tool-free call.
 
-        Returns ``None`` (caller falls back to the explicit ERROR view) if the
-        budget forbids the call, the call fails, or its output still won't parse.
+        Successful tool results are appended so a stub (or empty) answer can still
+        be turned into a view grounded on the data actually fetched. Returns
+        ``None`` (caller falls back) if the budget forbids the call, the call fails,
+        or its output still won't parse.
         """
+        draft = raw_text.strip()[:_REPAIR_INPUT_CHARS] or "(the model returned no text)"
+        content = _REPAIR_PROMPT.format(analysis=draft)
+        if evidence:
+            content += (
+                f"\n\nQUESTION:\n{question[:_QUESTION_CHARS]}"
+                "\n\nTOOL RESULTS (data fetched for this analysis — you may use it):\n"
+                + _evidence_digest(evidence)
+            )
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": _REPAIR_PROMPT.format(
-                    analysis=raw_text.strip()[:_REPAIR_INPUT_CHARS]
-                ),
-            },
+            {"role": "user", "content": content},
         ]
         resp = self._extra_call(messages, _REPAIR_MAX_TOKENS, tracker, web_search=False)
         if resp is None or is_completion_error(resp):
@@ -462,6 +507,44 @@ class Agent:
         view = self._parse_or_none(extract_text(resp, strict=False))
         if view is not None:
             self.memory.remember("prose answer converted to JSON by repair pass")
+        return view
+
+    def _fallback(
+        self,
+        user: str,
+        evidence: List[str],
+        tracker: Optional[RunTracker],
+        reason: str,
+    ) -> Optional[AnalystView]:
+        """One tool-free answer from ``fallback_model``; ``None`` if unavailable/failed."""
+        model = self.fallback_model
+        if not model or model == self.spec.model:
+            return None
+        content = user[:_FALLBACK_USER_CHARS]
+        if evidence:
+            content += "\n\nTOOL RESULTS gathered so far:\n" + _evidence_digest(
+                evidence
+            )
+        content += "\n\n" + _FALLBACK_INSTRUCTION
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": content},
+        ]
+        resp = self._extra_call(
+            messages, self.max_tokens, tracker, web_search=False, model=model
+        )
+        if resp is None or is_completion_error(resp):
+            self.memory.remember(f"fallback to {model} failed")
+            return None
+        view = self._parse_or_none(extract_text(resp, strict=False))
+        if view is None:
+            self.memory.remember(f"fallback to {model} returned no usable JSON")
+            return None
+        view.model = model
+        view.key_risks.append(
+            f"FALLBACK: answered by {model} after {self.spec.model} failed ({reason})"
+        )
+        self.memory.remember(f"answered by fallback model {model} ({reason})")
         return view
 
     def _emit_done(
@@ -549,13 +632,35 @@ class Agent:
             return self._to_view(salvaged)
         return None
 
-    def _parse(self, text: str) -> AnalystView:
+    def _parse(self, text: str, *, reason: str = "") -> AnalystView:
         parsed = self._parse_or_none(text)
         if parsed is not None:
             return parsed
         # 3) Total fallback: explicit ERROR view carrying the raw text, clearly
         # marked as a failure — never a plausible-looking NEUTRAL.
         self.memory.remember(f"unparseable model output: {text[:200]!r}")
+        detail = "model did not return the required JSON analyst view"
+        if reason:
+            detail += f" ({reason})"
         return errors.parse_error_view(
-            self.spec.name, self.spec.model, _strip_fences(text)
+            self.spec.name,
+            self.spec.model,
+            _strip_fences(text),
+            detail=detail,
+            extra_risks=[f"FAILURE REASON: {reason}"] if reason else None,
         )
+
+
+def _evidence_digest(evidence: List[str]) -> str:
+    """Join tool-result snippets, newest last, capped at ``_EVIDENCE_CHARS``."""
+    return "\n".join(evidence)[:_EVIDENCE_CHARS]
+
+
+def _failure_reason(final_text: str, budget_hit: bool, still_calling: bool) -> str:
+    if budget_hit:
+        return REASON_BUDGET
+    if still_calling:
+        return REASON_TOOL_LOOP
+    if not final_text.strip():
+        return REASON_EMPTY
+    return REASON_UNPARSEABLE

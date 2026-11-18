@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .base import Tool, ToolError, ToolRegistry
 from .datasources import default_data_tools
+from .forecast_tools import default_forecast_tools
 from .openbb_datasources import default_openbb_tools
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     "ToolError",
     "ToolRegistry",
     "default_data_tools",
+    "default_forecast_tools",
     "default_openbb_tools",
 ]

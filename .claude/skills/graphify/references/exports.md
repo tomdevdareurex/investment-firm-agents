@@ -81,7 +81,7 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`. Claude Desk
 If `total_words` from `graphify-out/.graphify_detect.json` is greater than 5,000, run:
 
 ```bash
-graphify benchmark
+.venv/Scripts/python.exe -m graphify benchmark
 ```
 
 Print the output directly in chat. If `total_words <= 5000`, skip silently - the graph value is structural clarity, not token compression, for small corpora.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "investment-firm-agents"
-version = "0.3.0"
+version = "0.4.0"
 description = "A buy-side investment firm simulated as a team of orchestrated LLM agents (decision-support only)."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -24,11 +24,14 @@ data = [
     "numpy>=1.26.0",
     "pandas>=2.0.0",
     "stockstats>=0.6.2",   # technical indicators (BSD) — shared chart + agent engine
+    "scipy>=1.11",         # ARIMA(1,1,1) / GARCH(1,1) maximum-likelihood forecast cones
 ]
-# M3 — embeddings memory + post-mortem
-embed = [
-    "numpy>=1.26.0",
-    "scikit-learn>=1.4.0",
+# Zero-shot quantile forecasting (Google TimesFM 2.5, Apache-2.0 weights).
+# Install CPU torch FIRST from the PyTorch CPU index (see README "Forecast cone"),
+# then `pip install -e ".[forecast]"`. Everything degrades gracefully when absent.
+forecast = [
+    "timesfm[torch]>=3.0,<4",
+    "numpy>=1.24",
 ]
 # M3 — HTTP surface
 api = [
@@ -49,6 +52,8 @@ dev = [
     "pytest>=8.0.0",
     "jupyter>=1.0.0",
     "ipykernel>=6.29.0",
+    "plotly>=5.20",        # notebooks/ charts
+    "xlrd>=2.0",           # notebooks/: reads Shiller's ie_data.xls
     # ruff's native binary is blocked by DBAG group policy; black runs in-process
     "black>=24.0",
 ]
@@ -61,7 +66,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # firm.yaml + costs.yaml are loaded at runtime via Path(__file__); ship them in wheels too.
-investment_firm = ["config/*.yaml"]
+investment_firm = ["config/*.yaml", "py.typed", "interfaces/web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

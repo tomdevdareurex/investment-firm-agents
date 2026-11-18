@@ -64,6 +64,18 @@ class TestBuildRunResult:
         result = build_run_result(_make_memo(), _make_tracker())
         assert result["report_url"] == ""
 
+    def test_failure_reason_and_fallback_note(self):
+        result = _payload(
+            recommendation="ERROR",
+            failure_reason="empty response",
+            synth_note="claude-5.5-opus failed (empty response); fallback x also failed.",
+        )
+        assert result["failure_reason"] == "empty response"
+        assert any("fallback x also failed" in w for w in result["warnings"])
+        html_text = render_committee_report(result)
+        assert "Why there is no ruling:" in html_text
+        assert "empty response" in html_text
+
 
 class TestRenderCommitteeReport:
     def test_structure_and_safety(self):
@@ -114,6 +126,103 @@ class TestRenderCommitteeReport:
 
     def test_empty_payload_renders(self):
         assert "Investment Committee Report" in render_committee_report({})
+
+
+_VOTE = {
+    "rows": [
+        {
+            "role": "portfolio_manager",
+            "model": "m",
+            "stance": "BULLISH",
+            "conviction": 4,
+            "weight": 3.0,
+            "counted": True,
+            "note": "",
+        },
+        {
+            "role": "compliance_officer",
+            "model": "m",
+            "stance": "BEARISH",
+            "conviction": 4,
+            "weight": 0.0,
+            "counted": False,
+            "note": "non-voting veto role",
+        },
+    ],
+    "totals": {"BULLISH": 3.0, "BEARISH": 0.0, "NEUTRAL": 0.0},
+    "winner": "BULLISH",
+    "margin": 3.0,
+    "veto": True,
+    "veto_by": ["compliance_officer"],
+    "participants": 1,
+    "excluded": ["compliance_officer"],
+    "rule": "weighted_majority_of_stance",
+    "veto_min_conviction": 3,
+}
+
+
+class TestVoteSurfaces:
+    def test_payload_carries_vote(self):
+        assert _payload()["vote"] == {}
+        assert _payload(vote=_VOTE)["vote"]["winner"] == "BULLISH"
+
+    def test_html_vote_section(self):
+        html_text = render_committee_report(_payload(vote=_VOTE))
+        assert "Committee vote (advisory)" in html_text
+        assert "VETO raised by compliance_officer" in html_text
+        assert "BULLISH 3 |" in html_text
+        assert "<script" not in html_text
+        assert html_text.index("Bull vs Bear debate") < html_text.index(
+            "Committee vote (advisory)"
+        ) < html_text.index("Research briefing")
+
+    def test_html_without_vote_has_no_section(self):
+        assert "Committee vote" not in render_committee_report(_payload())
+
+    def test_vote_xss_escaped(self):
+        bad = dict(_VOTE, winner="<img src=x onerror=alert(1)>")
+        html_text = render_committee_report(_payload(vote=bad))
+        assert "<img" not in html_text
+        assert "&lt;img" in html_text
+
+
+_CROSS_CHECK = {
+    "status": "ok",
+    "model": "gpt-5.6-terra",
+    "agrees": False,
+    "concerns": ["Valuation looks stretched.", "<b>bold</b> concern"],
+    "note": "The bear case is under-weighted.",
+}
+
+
+class TestCrossCheckSurfaces:
+    def test_payload_carries_cross_check(self):
+        assert _payload()["cross_check"] == {}
+        assert _payload(cross_check=_CROSS_CHECK)["cross_check"]["agrees"] is False
+
+    def test_html_cross_check_section_after_vote(self):
+        html_text = render_committee_report(
+            _payload(vote=_VOTE, cross_check=_CROSS_CHECK)
+        )
+        assert "Second opinion (CIO cross-check)" in html_text
+        assert "Disagrees" in html_text
+        assert "gpt-5.6-terra" in html_text
+        assert "Valuation looks stretched." in html_text
+        assert "<b>bold</b>" not in html_text and "&lt;b&gt;bold" in html_text
+        assert html_text.index("Committee vote (advisory)") < html_text.index(
+            "Second opinion (CIO cross-check)"
+        ) < html_text.index("Research briefing")
+
+    def test_html_cross_check_error_and_skipped(self):
+        err = {"status": "error", "model": "m", "reason": "API error: boom"}
+        html_text = render_committee_report(_payload(cross_check=err))
+        assert "Second opinion unavailable" in html_text
+        assert "API error: boom" in html_text
+        skipped = {"status": "skipped", "reason": "budget"}
+        assert "Second opinion" not in render_committee_report(
+            _payload(cross_check=skipped)
+        )
+        assert "Second opinion" not in render_committee_report(_payload())
 
 
 fastapi = pytest.importorskip("fastapi")

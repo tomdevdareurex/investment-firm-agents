@@ -34,15 +34,36 @@ from ..llm.utils import (
 )
 from . import errors, events
 from .agent import Agent, _clean_str_list, _extract_json_block, _strip_fences
+from .cross_check import cross_check_synthesis, pick_reviewer_model
 from .debate import debate_token_estimate, run_debate
 from .horizon import frame_question, resolve_horizon
 from .memory import RunMemory
 from .planner import plan_roles
-from .roster import RoleSpec, load_firm, profile_setting, resolve_profile, resolve_roles
+from .roster import (
+    RoleSpec,
+    fallback_model_for,
+    load_firm,
+    profile_setting,
+    resolve_profile,
+    resolve_roles,
+)
 from .schemas import AnalystView, Memo, Source
+from .vote import render_vote, tally
 
 _log = logging.getLogger(__name__)
-from .tools import ToolRegistry, default_data_tools, default_openbb_tools
+from .tools import (
+    ToolRegistry,
+    default_data_tools,
+    default_forecast_tools,
+    default_openbb_tools,
+)
+
+
+def _full_registry() -> ToolRegistry:
+    """Every read-only tool: core data + optional OpenBB + optional TimesFM."""
+    return ToolRegistry(
+        default_data_tools() + default_openbb_tools() + default_forecast_tools()
+    )
 
 # Core candidate analysts the planner may choose from (all defined in firm.yaml).
 CANDIDATE_ANALYSTS = [
@@ -76,6 +97,11 @@ _SYNTH_RETRY_NUDGE = (
 )
 _LIBRARIAN_MAX_TOKENS = 2500  # the briefing packet is longer than an analyst view
 _BRIEFING_MAX_CHARS = 6000  # cap on prose briefings used when the librarian skips JSON
+_USER_CONTEXT_MAX_CHARS = 4000
+_USER_CONTEXT_HEADER = (
+    "USER PORTFOLIO (user-supplied, highest trust - the question refers to these "
+    "holdings; figures computed from historical prices):\n"
+)
 LIBRARIAN_ROLE = "research_librarian"
 PLANNER_ROLE = "cio"
 SYNTH_ROLE = "cio"
@@ -109,6 +135,15 @@ _SYNTH_SYSTEM_TMPL = (
     '"what_to_watch": ["signal or event to monitor", "..."]}}'
 )
 
+# Appended to the CIO system prompt only when a committee vote was tallied (M2).
+_SYNTH_VOTE_RULES = (
+    "\n\nCOMMITTEE VOTE (advisory, see the user message for the tally): the weighted "
+    "stance vote below is advisory. You may rule against it only if you state the "
+    "reason explicitly in 'summary'. If a VETO was raised, the recommendation cannot "
+    "be BUY unless 'summary' explains why the veto is overruled. A TIE means the "
+    "committee did not reach a majority — rule on the evidence and say so."
+)
+
 
 @dataclasses.dataclass
 class Synthesis:
@@ -119,6 +154,12 @@ class Synthesis:
     main_risks: List[str] = dataclasses.field(default_factory=list)
     what_to_watch: List[str] = dataclasses.field(default_factory=list)
     confidence: int = 0  # 1..5; 0 = unknown / error / salvaged
+    reason: str = ""  # why an ERROR ruling failed
+    model: str = ""  # model that actually issued the ruling
+    note: str = ""  # fallback / failure note shown with the memo
+
+
+_REASON_BUDGET = "token budget exhausted"
 
 
 _LIBRARIAN_TASK_TMPL = (
@@ -187,7 +228,7 @@ def _build_briefing(
             )
     max_uses = int(profile_setting("web_search_max_uses", 3, profile=profile_name) or 3)
     enable_ws = client.supports_web_search_for(spec.model) and max_uses > 0
-    registry = ToolRegistry(default_data_tools() + default_openbb_tools())
+    registry = _full_registry()
     librarian = Agent(
         spec,
         tools=registry,
@@ -222,6 +263,70 @@ def _synthesize(
     synth_spec: RoleSpec,
     tracker: RunTracker,
     debate_summary: str = "",
+    *,
+    fallback_model: Optional[str] = None,
+    vote_text: str = "",
+) -> Synthesis:
+    """CIO ruling; on failure one retry on ``fallback_model`` (budget permitting)."""
+    primary = _synthesize_once(
+        question,
+        briefing,
+        views,
+        synth_spec,
+        synth_spec.model,
+        tracker,
+        debate_summary,
+        vote_text=vote_text,
+    )
+    primary.model = synth_spec.model
+    if primary.recommendation != "ERROR":
+        return primary
+    if (
+        not fallback_model
+        or fallback_model == synth_spec.model
+        or primary.reason == _REASON_BUDGET
+    ):
+        return primary
+    _log.warning(
+        "CIO synthesis on %s failed (%s) — retrying on %s",
+        synth_spec.model,
+        primary.reason,
+        fallback_model,
+    )
+    backup = _synthesize_once(
+        question,
+        briefing,
+        views,
+        synth_spec,
+        fallback_model,
+        tracker,
+        debate_summary,
+        vote_text=vote_text,
+    )
+    if backup.recommendation != "ERROR":
+        backup.model = fallback_model
+        backup.note = (
+            f"Ruling issued by fallback model {fallback_model} after "
+            f"{synth_spec.model} failed ({primary.reason})."
+        )
+        return backup
+    primary.note = (
+        f"{synth_spec.model} failed ({primary.reason}); fallback {fallback_model} "
+        f"also failed ({backup.reason})."
+    )
+    return primary
+
+
+def _synthesize_once(
+    question: str,
+    briefing: str,
+    views: List[AnalystView],
+    synth_spec: RoleSpec,
+    model: str,
+    tracker: RunTracker,
+    debate_summary: str = "",
+    *,
+    vote_text: str = "",
 ) -> Synthesis:
     body = "\n\n".join(v.render() for v in views)
     user = (
@@ -230,9 +335,14 @@ def _synthesize(
     )
     if debate_summary:
         user += f"\n\nBull/bear debate verdict:\n{debate_summary}"
+    if vote_text:
+        user += f"\n\nCommittee vote (advisory):\n{vote_text}"
     date_str = datetime.date.today().isoformat()
+    system = _SYNTH_SYSTEM_TMPL.format(date=date_str)
+    if vote_text:
+        system += _SYNTH_VOTE_RULES
     messages = [
-        {"role": "system", "content": _SYNTH_SYSTEM_TMPL.format(date=date_str)},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
     input_estimate = sum(len(m["content"]) for m in messages) // 4
@@ -242,23 +352,24 @@ def _synthesize(
             errors.error_summary(
                 "synthesis", "token budget exhausted before the CIO could rule"
             ),
+            reason=_REASON_BUDGET,
         )
 
     def _call(msgs: List[dict], cap: int) -> Optional[dict]:
         start = time.perf_counter()
-        resp = client.chat(synth_spec.model, msgs, max_tokens=cap)
+        resp = client.chat(model, msgs, max_tokens=cap)
         elapsed = time.perf_counter() - start
         inp, out, _ = extract_usage(resp)
-        tracker.record(
-            f"{synth_spec.name} (synthesis)", synth_spec.model, inp, out, elapsed
-        )
+        tracker.record(f"{synth_spec.name} (synthesis)", model, inp, out, elapsed)
         return resp
 
     resp = _call(messages, _SYNTH_MAX_TOKENS)
     if is_completion_error(resp):
         detail = get_error_message(resp) or "unknown error"
         return Synthesis(
-            "ERROR", errors.error_summary("synthesis", f"API error: {detail}")
+            "ERROR",
+            errors.error_summary("synthesis", f"API error: {detail}"),
+            reason=f"API error: {detail}"[:200],
         )
 
     text = extract_text(resp, strict=False)
@@ -290,7 +401,8 @@ def _synthesize(
     return Synthesis(
         "ERROR",
         errors.error_summary("synthesis", "no parseable JSON")
-        + f" Raw output (truncated): {raw[:400]}",
+        + f" Raw output (truncated): {raw[:400] or '(empty response)'}",
+        reason="unparseable JSON" if raw else "empty response",
     )
 
 
@@ -364,6 +476,8 @@ def run_committee(
     tracker: Optional[RunTracker] = None,
     on_event: Optional[events.EventSink] = None,
     horizon: str = "short",
+    user_context: str = "",
+    portfolio_id: str = "",
 ) -> Tuple[Memo, RunTracker]:
     """Run the committee and return ``(Memo, RunTracker)``.
 
@@ -376,9 +490,14 @@ def run_committee(
             profile's ``run_token_budget``).
         horizon: ``short`` | ``medium`` | ``long``; appended to the question every
             agent sees (``Memo.question`` stays the raw question).
+        user_context: Optional user-supplied text (e.g. an analysed portfolio) placed
+            at the top of the briefing so every stage sees it.
+        portfolio_id: Id of the portfolio analysis behind ``user_context``.
     """
     hz = resolve_horizon(horizon)
     framed = frame_question(question, hz.key)
+    ctx = (user_context or "").strip()[:_USER_CONTEXT_MAX_CHARS]
+    ctx_block = _USER_CONTEXT_HEADER + ctx if ctx else ""
     profile_name = resolve_profile(profile)
     if tracker is None:
         budget = int(profile_setting("run_token_budget", 0, profile=profile_name) or 0)
@@ -399,12 +518,17 @@ def run_committee(
     if not simple:
         events.safe_emit(on_event, events.BRIEFING_STARTED)
         briefing, sources, librarian_citations, briefing_model = _build_briefing(
-            framed, profile_name, tracker
+            f"{framed}\n\n{ctx_block}" if ctx_block else framed, profile_name, tracker
         )
         web_sources.extend(librarian_citations)
-        memory.set_briefing(briefing)
+        memory.set_briefing("\n\n".join(p for p in (ctx_block, briefing) if p))
         events.safe_emit(on_event, events.BRIEFING_DONE)
         _pace()
+    elif ctx_block:
+        memory.set_briefing(ctx_block)
+    if ctx_block:
+        label = "user_context: uploaded portfolio analysis"
+        sources.insert(0, f"{label} {portfolio_id}" if portfolio_id else label)
 
     # --- choose analysts -------------------------------------------------
     candidate_specs = list(
@@ -416,7 +540,9 @@ def run_committee(
         chosen = ["equity_analyst", "credit_analyst", "rates_analyst"]
     else:
         planner_spec = _resolve(PLANNER_ROLE, profile_name)
-        chosen = plan_roles(framed, candidate_specs, planner_spec, tracker=tracker)
+        chosen = plan_roles(
+            framed, candidate_specs, planner_spec, tracker=tracker, user_context=ctx
+        )
         _pace()
 
     specs = resolve_roles(chosen, profile=profile_name)
@@ -424,7 +550,7 @@ def run_committee(
 
     # --- run analysts ----------------------------------------------------
     tools = (
-        None if simple else ToolRegistry(default_data_tools() + default_openbb_tools())
+        None if simple else _full_registry()
     )
     ws_max_uses = int(
         profile_setting("web_search_max_uses", 3, profile=profile_name) or 3
@@ -466,6 +592,7 @@ def run_committee(
                 max_steps=1 if simple else 3,
                 web_search=enable_ws,
                 web_search_max_uses=ws_max_uses,
+                fallback_model=fallback_model_for(spec, profile=profile_name),
             )
             view = agent.run(
                 framed,
@@ -508,6 +635,21 @@ def run_committee(
         # Synthesis may now spend what is left of its own reservation.
         tracker.release(held)
 
+    # --- committee vote (M2, advisory; pure tally, no LLM call) ------------
+    vote_dict: dict = {}
+    vote_text = ""
+    if not simple:
+        vote = tally(views, specs, (load_firm().get("committee") or {}))
+        vote_dict = vote.to_dict()
+        vote_text = render_vote(vote)
+        events.safe_emit(
+            on_event,
+            events.VOTE_DONE,
+            agent="committee",
+            detail=f"{vote.winner} ({'VETO' if vote.veto else 'no veto'})",
+            data=vote_dict,
+        )
+
     # --- synthesize ------------------------------------------------------
     events.safe_emit(
         on_event,
@@ -516,20 +658,44 @@ def run_committee(
         model=synth_spec.model,
     )
     synth = _synthesize(
-        framed, memory.briefing, views, synth_spec, tracker, debate_summary
+        framed,
+        memory.briefing,
+        views,
+        synth_spec,
+        tracker,
+        debate_summary,
+        fallback_model=fallback_model_for(synth_spec, profile=profile_name),
+        vote_text=vote_text,
     )
+    synth_model = synth.model or synth_spec.model
     events.safe_emit(
         on_event,
         events.SYNTHESIS_DONE,
         agent=synth_spec.name,
-        model=synth_spec.model,
+        model=synth_model,
         detail=synth.recommendation,
     )
+
+    # --- CIO cross-check (M2, advisory second opinion; premium profile) ------
+    cross_check: dict = {}
+    if not simple and synth.recommendation != "ERROR":
+        if profile_setting("cio_cross_check", False, profile=profile_name):
+            cross_check = cross_check_synthesis(
+                framed,
+                synth,
+                views,
+                model=pick_reviewer_model(synth_model, profile=profile_name),
+                tracker=tracker,
+                profile=profile_name,
+                on_event=on_event,
+                enabled=True,
+            )
 
     memo = Memo(
         question=question,
         profile=profile_name,
         horizon=hz.key,
+        portfolio_id=portfolio_id if ctx_block else "",
         recommendation=synth.recommendation,
         summary=synth.summary,
         headline=synth.headline,
@@ -543,8 +709,12 @@ def run_committee(
         briefing_model=briefing_model,
         debate=debate_turns,
         debate_summary=debate_summary,
+        vote=vote_dict,
+        cross_check=cross_check,
         synth_role=synth_spec.name,
-        synth_model=synth_spec.model,
+        synth_model=synth_model,
+        synth_note=synth.note,
+        failure_reason=synth.reason if synth.recommendation == "ERROR" else "",
         debate_judge_role=synth_spec.name if debate_ran else "",
         debate_judge_model=synth_spec.model if debate_ran else "",
         sources=sources,

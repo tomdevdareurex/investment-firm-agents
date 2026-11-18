@@ -13,7 +13,9 @@ from __future__ import annotations
 import pytest
 
 from investment_firm.core.roster import (
+    RoleSpec,
     RosterError,
+    fallback_model_for,
     load_firm,
     profile_names,
     resolve_profile,
@@ -212,6 +214,55 @@ class TestRosterErrors:
         monkeypatch.delenv("IFA_PROFILE", raising=False)
         with pytest.raises(RosterError, match="Unknown profile"):
             resolve_roles(["analyst_a"], profile="fantasy", firm=_MINI_FIRM)
+
+
+# ---------------------------------------------------------------------------
+# fallback_model_for
+# ---------------------------------------------------------------------------
+
+
+def _role(tier: str, model: str) -> RoleSpec:
+    return RoleSpec(name="r", group="g", tier=tier, model=model, mandate="m")
+
+
+class TestFallbackModel:
+    def test_same_tier_other_model_first(self):
+        fb = fallback_model_for(
+            _role("WORKER", "claude-4.6-sonnet"), profile="pricey", firm=_MINI_FIRM
+        )
+        assert fb == "gpt-4.1"
+
+    def test_single_model_tier_uses_nearest_lower_tier(self):
+        fb = fallback_model_for(
+            _role("HEAD", "claude-4.8-opus"), profile="cheap", firm=_MINI_FIRM
+        )
+        assert fb == "claude-4.6-sonnet"  # AUTHORITY
+
+    def test_worker_falls_back_upwards(self):
+        fb = fallback_model_for(
+            _role("WORKER", "gpt-4o-mini"), profile="cheap", firm=_MINI_FIRM
+        )
+        assert fb == "claude-4.5-haiku"  # SENIOR
+
+    def test_disabled_by_profile_flag(self):
+        firm = {
+            **_MINI_FIRM,
+            "profiles": {
+                "cheap": {**_MINI_FIRM["profiles"]["cheap"], "fallback_on_error": False}
+            },
+            "default_profile": "cheap",
+        }
+        assert (
+            fallback_model_for(
+                _role("WORKER", "gpt-4o-mini"), profile="cheap", firm=firm
+            )
+            is None
+        )
+
+    def test_real_balanced_cio_falls_back_to_gpt(self, monkeypatch):
+        monkeypatch.delenv("IFA_PROFILE", raising=False)
+        cio = resolve_roles(["cio"], profile="balanced")["cio"]
+        assert fallback_model_for(cio, profile="balanced") == "gpt-5.6-terra"
 
 
 # ---------------------------------------------------------------------------

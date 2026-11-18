@@ -23,7 +23,7 @@ from typing import Any, Dict, Iterator, Literal, Optional
 try:
     from fastapi import APIRouter, HTTPException
     from fastapi.responses import HTMLResponse, StreamingResponse
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError as _exc:  # pragma: no cover
     raise RuntimeError(
         "FastAPI not installed. Run:\n"
@@ -72,6 +72,7 @@ class RunRequest(BaseModel):
     profile: Optional[str] = None
     simple: bool = False
     horizon: Literal["short", "medium", "long"] = "short"
+    portfolio_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{12}$")
 
 
 class ChatRequest(BaseModel):
@@ -109,15 +110,25 @@ def _run_worker(
     profile: Optional[str],
     simple: bool,
     horizon: str = "short",
+    user_context: str = "",
+    portfolio_id: str = "",
 ) -> None:
     """Execute run_committee in a daemon thread and store the result."""
     with _lock:
         _registry[run_id]["status"] = "running"
 
     emit = _make_emit(run_id)
+    extra: Dict[str, Any] = {}
+    if user_context:
+        extra = {"user_context": user_context, "portfolio_id": portfolio_id}
     try:
         memo, tracker = run_committee(
-            question, profile=profile, simple=simple, on_event=emit, horizon=horizon
+            question,
+            profile=profile,
+            simple=simple,
+            on_event=emit,
+            horizon=horizon,
+            **extra,
         )
         result = build_run_result(memo, tracker, horizon=horizon, run_id=run_id)
 
@@ -158,6 +169,19 @@ def create_run(body: RunRequest) -> Dict[str, Any]:
                 detail=f"{exc}. Available profiles: {', '.join(available)}",
             ) from exc
 
+    user_context = ""
+    if body.portfolio_id:
+        # Imported lazily: portfolio.py imports this module.
+        from . import portfolio as _portfolio
+
+        try:
+            user_context = _portfolio.portfolio_context(body.portfolio_id)
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="portfolio analysis not found - re-analyse your portfolio",
+            ) from exc
+
     run_id = _new_id()
     entry: Dict[str, Any] = {
         "run_id": run_id,
@@ -166,6 +190,7 @@ def create_run(body: RunRequest) -> Dict[str, Any]:
         "profile": body.profile,
         "simple": body.simple,
         "horizon": body.horizon,
+        "portfolio_id": body.portfolio_id,
         "created_at": _utcnow(),
         "result": None,
         "error": None,
@@ -179,7 +204,15 @@ def create_run(body: RunRequest) -> Dict[str, Any]:
 
     thread = threading.Thread(
         target=_run_worker,
-        args=(run_id, question, body.profile, body.simple, body.horizon),
+        args=(
+            run_id,
+            question,
+            body.profile,
+            body.simple,
+            body.horizon,
+            user_context,
+            body.portfolio_id or "",
+        ),
         daemon=True,
         name=f"run-{run_id}",
     )
@@ -226,6 +259,7 @@ def get_run(run_id: str) -> Dict[str, Any]:
         "profile": entry["profile"],
         "simple": entry["simple"],
         "horizon": entry.get("horizon", "short"),
+        "portfolio_id": entry.get("portfolio_id"),
         "created_at": entry["created_at"],
         "event_count": entry.get("event_seq", 0),
         "disclaimer": investment_firm.DISCLAIMER,

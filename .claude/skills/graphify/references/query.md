@@ -62,10 +62,10 @@ If the list is empty, say so plainly and stop — do not proceed to traversal.
 
 Build the **expanded query string** by joining the selected tokens with spaces. Use this string as `QUESTION` below — NOT the original user question. (The original question is preserved only for `save-result` at the end.)
 
-Prefer the CLI when it is installed:
+Prefer the CLI (through Python: the `graphify.exe` launcher is blocked by group policy on this laptop):
 ```bash
-graphify query "QUESTION"
-# or: graphify query "QUESTION" --dfs --budget 3000
+.venv/Scripts/python.exe -m graphify query "QUESTION"
+# or: .venv/Scripts/python.exe -m graphify query "QUESTION" --dfs --budget 3000
 ```
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
@@ -188,7 +188,7 @@ At the **start** of graph work, refresh and read the lessons: run `graphify refl
 Find the shortest path between two named concepts in the graph. Prefer the CLI when installed:
 
 ```bash
-graphify path "NODE_A" "NODE_B"
+.venv/Scripts/python.exe -m graphify path "NODE_A" "NODE_B"
 ```
 
 If the CLI is unavailable, run it inline:
@@ -256,7 +256,7 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question "Path fr
 Give a plain-language explanation of a single node - everything connected to it. Prefer the CLI when installed:
 
 ```bash
-graphify explain "NODE_NAME"
+.venv/Scripts/python.exe -m graphify explain "NODE_NAME"
 ```
 
 If the CLI is unavailable, run it inline:

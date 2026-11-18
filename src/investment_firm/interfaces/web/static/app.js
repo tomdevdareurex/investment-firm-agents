@@ -957,7 +957,10 @@ async function startRun() {
     const data = await fetchJson('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, profile: profile || null, simple, horizon: selectedHorizon() }),
+      body: JSON.stringify({
+        question, profile: profile || null, simple, horizon: selectedHorizon(),
+        portfolio_id: (window.ifaPortfolioForRun && window.ifaPortfolioForRun()) || null,
+      }),
     });
 
     const runId = data.run_id;

@@ -49,6 +49,8 @@
   let serverSeries = {}; // indicator name -> line series
   let subpaneSeries = {}; // indicator name -> oscillator series
   let lastPayload = null;
+  // Initial zoom: last N bars (scroll/pinch to see the full history).
+  const VISIBLE_BARS = 250;
 
   // ── Indicators (computed client-side from returned closes) ─────────────
 
@@ -70,6 +72,7 @@
 
   function destroyChart() {
     if (chart) {
+      document.dispatchEvent(new CustomEvent('ifa:chart-destroyed'));
       chart.remove();
       chart = null;
       candleSeries = null;
@@ -135,7 +138,14 @@
     renderServerOverlays(payload);
     renderSubpanes(payload);
     applyLayout();
-    chart.timeScale().fitContent();
+    const bars = payload.ohlc.length;
+    if (bars > VISIBLE_BARS) {
+      chart.timeScale().setVisibleLogicalRange({ from: bars - VISIBLE_BARS, to: bars + 2 });
+    } else {
+      chart.timeScale().fitContent();
+    }
+    // forecast.js listens and draws its cone on the same chart instance.
+    document.dispatchEvent(new CustomEvent('ifa:chart-rendered', { detail: { payload } }));
   }
 
   // Overlay/subpane renderers reuse live series via setData(); series are
@@ -479,6 +489,12 @@
     // Load the default ticker (SPY) once so the chart is populated on page load.
     loadChart();
   }
+
+  // Read-only handle for sibling modules (forecast.js) that overlay the chart.
+  window.ifaCharts = {
+    get chart() { return chart; },
+    get lastPayload() { return lastPayload; },
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initCharts);

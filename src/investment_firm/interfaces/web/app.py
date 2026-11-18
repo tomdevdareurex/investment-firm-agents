@@ -3,7 +3,8 @@
 Routes
 ------
 GET /                  Serves static/index.html (no tokens).
-GET /api/health        {"version": ..., "disclaimer": ...}
+GET /api/health        {"version": ..., "disclaimer": ..., "forecast_available": bool}
+GET /api/market/forecast  Quantile price cone (TimesFM if installed, else baseline).
 GET /api/profiles      Profile names + per-tier model lists.
 GET /api/preview       Resolved roles, run_token_budget, profile, disclaimer.
                        Uses ONLY roster functions — zero LLM/API calls.
@@ -149,9 +150,12 @@ def serve_index() -> FileResponse:
 @app.get("/api/health")
 def health() -> Dict[str, Any]:
     """Version and disclaimer — no tokens spent."""
+    from ...core.tools.forecast_tools import timesfm_available
+
     return {
         "version": investment_firm.__version__,
         "disclaimer": investment_firm.DISCLAIMER,
+        "forecast_available": timesfm_available(),
     }
 
 

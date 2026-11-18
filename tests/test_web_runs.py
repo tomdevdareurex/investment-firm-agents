@@ -102,6 +102,9 @@ def _make_tracker() -> RunTracker:
     return tracker
 
 
+_CONTEXT_CALLS: list = []
+
+
 def _fake_run_committee(
     question,
     *,
@@ -110,9 +113,12 @@ def _fake_run_committee(
     tracker=None,
     on_event=None,
     horizon="short",
+    user_context="",
+    portfolio_id="",
 ) -> Tuple[Memo, RunTracker]:
     from investment_firm.core import events
 
+    _CONTEXT_CALLS.append((user_context, portfolio_id))
     events.safe_emit(on_event, events.RUN_STARTED, detail=question)
     events.safe_emit(
         on_event, events.ANALYST_STARTED, agent="equity_analyst", model="gpt-4o-mini"
@@ -125,6 +131,7 @@ def _fake_run_committee(
         data={"stance": "BULLISH", "conviction": 4, "grounded": True},
     )
     memo = _make_memo(question=question, profile=profile or "balanced")
+    memo.portfolio_id = portfolio_id
     t = _make_tracker()
     events.safe_emit(on_event, events.RUN_DONE, detail=memo.recommendation)
     return memo, t

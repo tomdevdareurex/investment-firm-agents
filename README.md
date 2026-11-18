@@ -32,6 +32,16 @@ and doubles as a hands-on way to learn agent **orchestration** patterns.
 This machine has corporate AppLocker + Zscaler. Run pip as a module (the `pip.exe` shim
 is blocked) and use a project-local virtual environment:
 
+Quick path (everything except the heavy `forecast` extra):
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[data,api,dev,databricks,openbb]"
+copy .env.example .env   # then paste your AI Playground key
+```
+
+Or pick extras one by one:
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e .           # core
@@ -40,9 +50,17 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[dev]"    # tests + notebooks
 .venv\Scripts\python.exe -m pip install -e ".[databricks]"  # optional 2nd LLM backend
 .venv\Scripts\python.exe -m pip install -e ".[openbb]"      # optional OpenBB tools (yield curve, options, CPI; AGPLv3)
+.venv\Scripts\python.exe -m pip install -e ".[forecast]"    # optional TimesFM 2.5 price forecast (CPU torch, ~1 GB)
 
 copy .env.example .env   # then paste your AI Playground key
 ```
+
+The `forecast` extra pulls in `torch`; on a CPU-only laptop install the CPU wheel
+first to avoid the CUDA download:
+`.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu`
+then the extra. Without it the web forecast endpoint still answers with the
+random-walk baseline cone only (`is_model: false`), and the `forecast_quantiles`
+tool is not advertised to the agents.
 
 Get the key from **GET API KEY** on the
 [DevPortal AI Playground](https://devportal.deutsche-boerse.de/ai-playground) page.
@@ -115,9 +133,10 @@ question and profile — zero LLM calls, zero token spend.
 
 The **Run (spends tokens)** button is now live. After a confirmation dialog it
 POSTs to `/api/runs`, then polls every 3 seconds until the committee finishes.
-Results are shown in five tabs:
+Results are shown in tabs:
 
-- **Memo** — recommendation badge (BUY/SELL/HOLD/AVOID) and the CIO summary.
+- **Memo** — recommendation badge (BUY/SELL/HOLD/AVOID), the plain-language CIO
+  summary, the committee vote table and (premium profile) the CIO second opinion.
 - **Reasoning** — one card per analyst showing role, model, stance, conviction,
   full rationale text, key risks list, and evidence/source items. This is the
   "explain the logic" view.
@@ -127,6 +146,11 @@ Results are shown in five tabs:
   evidence field.
 - **Costs** — per-call token/cost table plus any warnings (JSON-fallback analysts,
   budget limit reached).
+
+Below the form, the **Market Charts** panel plots cached yfinance candles with
+indicator overlays and a technical summary; **Force refresh** bypasses the price
+cache, **Forecast cone** overlays the TimesFM / baseline quantile cone (see
+[Forecast cone](#forecast-cone-timesfm-optional)).
 
 Runs respect `--profile` and `--simple` (passed via the UI controls) and the
 `IFA_CALL_PAUSE` env variable slows inter-call pacing to stay under
@@ -208,6 +232,133 @@ This cache is for research UX, reproducibility, and avoiding repeated provider
 calls. It must not be used for execution. Any separate execution system outside
 this app would need independent real-time market-data validation, compliance
 controls, and human approval.
+
+### Forecast cone (TimesFM, optional)
+
+```text
+GET /api/market/forecast?ticker=AAPL&period=1y&horizon_days=20
+```
+
+Returns median (`q50`) + 10/90 % quantile paths (`q10`/`q90`) for the next
+`horizon_days` business days (1–60), with `dates`, `last_close`, `as_of` and a
+`summary` (end-of-horizon median % and 10–90 % range). With the `forecast` extra
+installed the cone comes from Google TimesFM 2.5 200M (Apache-2.0 weights,
+loaded lazily on first call) and `is_model` is `true`; the historical-volatility
+random-walk baseline is always included for comparison and is all you get
+without the extra. `/api/health` reports `forecast_available`.
+
+In the Market Charts panel tick **Forecast cone** to overlay it on the current
+chart as dashed lines anchored at the last close. The badge next to the label
+shows the engine (**TimesFM** or **baseline**); the horizon radio sets the
+length (short = 20, medium/long = 60 business days); only the `1d` interval is
+supported because forecast dates are business days. This is separate from
+**Force refresh**, which just bypasses the price cache and re-downloads candles.
+When TimesFM is installed the same numbers reach analysts and the consultant
+through the `forecast_quantiles` tool. A quantile cone is a statistical range,
+not a prediction or a trade signal — treat it as one more input to the memo.
+
+#### ARIMA(1,1,1) and ARIMA-GARCH(1,1) cones
+
+```text
+GET /api/market/forecast?ticker=^GSPC&horizon_days=20&method=arima
+GET /api/market/forecast?ticker=^GSPC&horizon_days=20&method=arima_garch
+```
+
+`method` is `timesfm` (default, the cone above), `arima` or `arima_garch`. Both
+econometric methods fit an ARMA(1,1) to log returns `r_t = Δlog P_t`, i.e. an
+ARIMA(1,1,1) on the log price, by Gaussian maximum likelihood (numpy + scipy,
+`.[data]` extra, no network):
+
+* mean `r_t = μ + φ r_{t-1} + θ ε_{t-1} + ε_t`
+* variance: constant `σ²` for `arima`; for `arima_garch`
+  `σ²_t = ω + α ε²_{t-1} + β σ²_{t-1}` (GARCH(1,1), fitted jointly with the mean,
+  `α + β < 1`).
+
+The cone is Gaussian on the log price: the k-step variance of the cumulative
+return is `Σ Ψ²_{k-i} E[σ²_{T+i}]` (ARMA ψ-weights), so with GARCH it starts at
+today's conditional volatility and decays towards the unconditional level. The
+payload adds `model_params` (μ in % per bar, φ, θ, and σ or ω/α/β/persistence),
+`fit` (log-likelihood, AIC, BIC, n, converged, `warnings`) and `step_vol_pct`
+(forecast one-bar volatility per step). `fit.warnings` flags weakly identified
+ARMA terms (φ ≈ -θ, common on index returns) and IGARCH fits (α + β at the
+bound, e.g. weekly data spanning the 2020 crash — no unconditional vol is
+reported then and the cone keeps widening). In the Market Charts panel tick **ARIMA(1,1,1)**
+for the orange cone; tick **+ GARCH(1,1)** to switch its error variance to
+GARCH (this also ticks ARIMA; unticking ARIMA clears GARCH). It is independent
+of the blue **Forecast cone** so the two can be compared.
+
+### Free alt-data tools (keyless)
+
+Three read-only tools were added as substitutes for paid congressional/lobbying
+data vendors, all backed by primary government sources with no API key:
+
+| Tool | Source | What it returns |
+| --- | --- | --- |
+| `get_gov_contracts` | USAspending.gov | Recent federal awards to a recipient name |
+| `get_lobbying` | Senate LDA | Quarterly lobbying filings for a client/registrant |
+| `get_insider_trades` | SEC EDGAR full-text search | Recent Form 4 filings for a ticker/company |
+
+### Committee vote and CIO second opinion
+
+After the debate the orchestrator tallies a weighted stance vote across the
+analyst views (`core/vote.py`; weights/veto from `firm.yaml`, risk veto needs
+conviction ≥ `committee.veto_min_conviction`). The tally is shown in the memo and
+handed to the CIO as context, not as a binding rule. On the `premium` profile
+(`cio_cross_check: true`) a second model from a different family reviews the CIO
+ruling and the memo shows whether it agrees, plus up to three concerns — advisory
+only.
+
+### Evaluated and skipped
+
+- **QuiverQuant** — paid API (USD 30–250/month) and the ToS forbids scraping;
+  replaced by the free primary sources above. Live congressional trades have no
+  free feed and remain out of scope.
+- **liquid.trade** — leveraged-perps DEX aggregator; only a trade-scoped OAuth
+  MCP / Discord-gated REST exists. No free data API, and connecting would cross
+  the hard "no broker/exchange connectivity" boundary.
+- **TimesFM 3.0 weights** — non-commercial licence; the 2.5 Apache-2.0 weights
+  are used instead.
+
+### Research notebooks
+
+The notebooks live under `notebooks/backtest/<strategy>/` and share their data loading,
+backtest engine and statistics through [notebooks/backtest/bt_common.py](notebooks/backtest/bt_common.py).
+They need the `.[data,dev]` extras (plotly is in `dev`), cache Yahoo data under `.cache/notebooks/`,
+are research only and spend no LLM tokens.
+
+[notebooks/backtest/sma/sma_trend_backtest.ipynb](notebooks/backtest/sma/sma_trend_backtest.ipynb) backtests a
+price-vs-SMA timing rule on SPY. The rule holds SPY when the close is above its
+SMA and T-bills (`^IRX` accrual, or the `BIL` ETF) otherwise. `REBALANCE` limits checks to the
+last close of each week, month, quarter or year (`daily` = every close). Each signal is decided at
+the close and filled at the next open, and the notebook reports per-switch costs, the
+look-ahead variant for comparison, a window/cost sweep and crisis sub-periods.
+
+[notebooks/backtest/sma/sma200_regime_analysis.ipynb](notebooks/backtest/sma/sma200_regime_analysis.ipynb) asks *why* the
+SMA200/monthly version works. Using the same timing, it tests whether the regime predicts the next
+month's excess return over T-bills (t-test, Newey-West, block bootstrap), across sub-periods back to
+1934 (S&P 500 price from Yahoo plus Shiller dividends before 1988, `^SP500TR` after; FRED `TB3MS`
+T-bills before 1960). It also breaks down where the Sharpe gain comes from and runs a placebo test.
+
+[notebooks/backtest/timesfm/timesfm_forecast_backtest.ipynb](notebooks/backtest/timesfm/timesfm_forecast_backtest.ipynb)
+asks TimesFM 2.5 (through the app's `forecast_tools` loader) for SPY's return distribution to the next
+month-end at every month-end since 1997, using only data up to that close. It scores the forecasts first
+(hit rate vs always-up, rank IC, decile calibration, pinball-loss skill vs a random walk and ARIMA) and
+then backtests four rules (median above T-bills, probability threshold, left-tail filter, median plus
+SMA200) on the same engine against SMA200, ARIMA, momentum and a random-timing placebo. It splits the
+results at the model's release date because TimesFM may have seen S&P 500 history in pre-training.
+It needs the `forecast` extra; the first run computes ~350 TimesFM and ARIMA forecasts on CPU (~25 min)
+and caches them under `.cache/notebooks/timesfm/`.
+
+A structured strategy search lives next to these notebooks: [PLAN.md](notebooks/backtest/PLAN.md)
+(Stage 1: frozen success metric, dev 1934-89 / validation 1990-2009 / holdout 2010+ on a long S&P 500
+total-return proxy, shared `bt_*` modules with tests in `notebooks/backtest/checks/`) and
+[PLAN-stage2.md](notebooks/backtest/PLAN-stage2.md) (Stage 2: S02-S10, one folder per family:
+`macro/`, `volatility/`, `trend/`, `seasonality/`, `fundamentals/` (SEC EDGAR), `ml/`, `ensemble/`).
+Every strategy passes a truncation look-ahead test before backtesting, chooses its variant on the
+development period only, and every variant is logged in
+[registry.csv](notebooks/backtest/registry.csv) / [REGISTRY.md](notebooks/backtest/REGISTRY.md) for the
+deflated-Sharpe trial count. Result so far: none of the ten ideas beats SMA200 monthly under the frozen
+criteria. Each notebook is generated by its `build_sXX.py` (`--execute` runs it).
 
 ---
 

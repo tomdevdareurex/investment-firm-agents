@@ -1,0 +1,8 @@
+TEMPORARY — delete me.
+The CI workflow could not be written to .github/workflows/ci.yml in the authoring
+session (shell blocked by the erroring graphify hook; directory creation needs a shell).
+A fresh session should run:
+  New-Item -ItemType Directory -Force .github\workflows
+  Move-Item "$env:USERPROFILE\.copilot\session-state\4d30a1eb-0340-49b1-b6e6-c57d1fddd051\files\ci.yml" .github\workflows\ci.yml
+  Remove-Item .github\ci-placeholder.txt
+Or copy the workflow text from planning-forecast-altdata.md §A3.

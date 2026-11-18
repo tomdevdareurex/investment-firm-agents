@@ -48,11 +48,15 @@ def _warnings(memo: Memo, tracker: RunTracker) -> List[str]:
         for risk in view.key_risks:
             if risk.startswith("API error"):
                 warnings.append(f"{view.role}: API error — {risk}")
+            elif risk.startswith("FALLBACK:"):
+                warnings.append(f"{view.role}: {risk}")
         if not view.grounded:
             warnings.append(
                 f"{view.role}: ungrounded — no successful tool call or web "
                 "citation backed this view."
             )
+    if memo.synth_note:
+        warnings.append(f"{memo.synth_role or 'synthesis'}: {memo.synth_note}")
     if tracker.token_budget > 0 and tracker.total_tokens >= tracker.token_budget:
         warnings.append(
             f"Token budget reached or exceeded: "
@@ -126,6 +130,7 @@ def build_run_result(
         "summary": memo.summary,
         "profile": memo.profile,
         "question": memo.question,
+        "portfolio_id": memo.portfolio_id,
         "briefing": memo.briefing,
         "briefing_role": memo.briefing_role,
         "briefing_model": memo.briefing_model,
@@ -148,8 +153,12 @@ def build_run_result(
         "web_sources": [s.model_dump() for s in memo.web_sources],
         "debate": [t.model_dump() for t in memo.debate],
         "debate_summary": memo.debate_summary,
+        "vote": dict(memo.vote or {}),
+        "cross_check": dict(memo.cross_check or {}),
         "synth_role": memo.synth_role,
         "synth_model": memo.synth_model,
+        "synth_note": memo.synth_note,
+        "failure_reason": memo.failure_reason,
         "debate_judge_role": memo.debate_judge_role,
         "debate_judge_model": memo.debate_judge_model,
         "cost_summary": tracker.render_summary(),

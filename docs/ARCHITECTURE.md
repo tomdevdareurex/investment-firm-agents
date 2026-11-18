@@ -32,18 +32,24 @@ core/
   planner.py     LLM call: pick which analysts to run + order
       │
   tools/         Tool / ToolRegistry / ToolError (base.py); free data tools
-      │          (datasources.py); optional OpenBB tools (openbb_datasources.py,
-      │          auto-enabled only when the .[openbb] extra is installed)
+      │          (datasources.py); keyless alt-data (altdata_free.py:
+      │          USAspending / Senate LDA / EDGAR Form 4); optional OpenBB tools
+      │          (openbb_datasources.py, only with .[openbb]); optional TimesFM
+      │          forecast_quantiles (forecast_tools.py, only with .[forecast])
       │
   agent.py       tool-using observe-think-act loop → AnalystView
       │
   horizon.py     short/medium/long definitions + frame_question()
   glossary.py    plain-language GLOSSARY, find_terms(), METHODOLOGY
-  orchestrator.py   briefing → plan → analysts → CIO synthesis → Memo
+  vote.py        weighted committee tally + veto (firm.yaml votes/vote_weight/veto)
+  cross_check.py CIO second opinion from another model family (premium only)
+  orchestrator.py   briefing → plan → analysts → debate → vote → CIO synthesis
+                    → cross-check → Memo
   portfolio_advisor.py   one advisor LLM call over a portfolio digest
 
 data/
   risk.py, indicators.py, backtest.py, technicals.py   pure compute
+  forecast.py    random-walk quantile baseline, business-day dates, cone payload
   portfolio.py   portfolio parsing, analytics, rebalancing, strategy overlays
 
 interfaces/
@@ -51,9 +57,11 @@ interfaces/
   report/        payload.py (build_run_result), _html.py (escaping, SVG),
                  html.py (committee report), portfolio_html.py — no fastapi
   web/app.py     FastAPI preview UI (zero LLM calls for GET /api/preview)
-  web/runs.py, market.py, portfolio.py (+ market_data.py, portfolio_data.py)
-  web/static/    index.html, app.js, memo.js, charts.js, portfolio.js,
-                 app.css, extras.css (portfolio.js loads after app.js)
+  web/runs.py, market.py (price-history + /api/market/forecast), portfolio.py
+                 (+ market_data.py, portfolio_data.py)
+  web/static/    index.html, app.js, memo.js, charts.js, forecast.js (cone
+                 overlay; listens to charts.js ifa:chart-rendered), portfolio.js,
+                 app.css, extras.css (memo/forecast/portfolio load after app.js)
 ```
 
 Dependency direction: each layer imports only from layers above or from the

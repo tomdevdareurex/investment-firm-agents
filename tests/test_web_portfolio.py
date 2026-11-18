@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -18,11 +17,14 @@ from investment_firm.interfaces.web.market_data import (  # noqa: E402
 )
 
 from conftest import FakeLLM, openai_text  # noqa: E402
-from test_web_runs import _fake_run_committee, _wait_for_done  # noqa: E402
+from test_web_runs import (
+    _CONTEXT_CALLS,
+    _fake_run_committee,
+    _wait_for_done,
+)  # noqa: E402
 
-_SAMPLE = (
-    Path(__file__).resolve().parents[1] / "docs" / "examples" / "portfolio_sample.csv"
-).read_text(encoding="utf-8")
+# Pinned copy of docs/examples/portfolio_sample.csv (users edit that file locally).
+_SAMPLE = "ticker,weight\nSPY,0.5\nTLT,0.3\nGLD,0.2\n"
 
 _ADVICE = (
     '{"assessment": "The mix leans on shares for growth over the long term.", '
@@ -306,3 +308,60 @@ class TestPortfolioStatic:
             assert needle in html
         assert html.index("/static/app.js") < html.index("/static/portfolio.js")
         assert html.count('name="portfolio-strategy"') == 4
+
+    def test_portfolio_section_comes_before_question(self, pclient):
+        client, _, _ = pclient
+        html = client.get("/").text
+        assert html.index('id="portfolio-controls"') < html.index('id="question"')
+        assert 'id="use-portfolio"' in html
+
+
+class TestPortfolioContextRun:
+    def test_context_text_has_holdings_and_figures(self, pclient):
+        from investment_firm.interfaces.web.portfolio import portfolio_context
+
+        client, _, _ = pclient
+        aid = _analyze(client, strategies=[]).json()["analysis_id"]
+        text = portfolio_context(aid)
+        for needle in ("SPY 50.0%", "TLT 30.0%", "GLD 20.0%", "max drawdown", aid):
+            assert needle in text
+        assert "Rebalancing monthly" in text
+        assert len(text) < 4000
+
+    def test_run_with_portfolio_passes_context(self, pclient):
+        client, _, _ = pclient
+        aid = _analyze(client, strategies=[]).json()["analysis_id"]
+        _CONTEXT_CALLS.clear()
+        resp = client.post(
+            "/api/runs",
+            json={"question": "Keep monthly rebalancing?", "portfolio_id": aid},
+        )
+        assert resp.status_code == 202
+        run_id = resp.json()["run_id"]
+        data = _wait_for_done(client, run_id)
+        assert data["portfolio_id"] == aid
+        assert data["result"]["portfolio_id"] == aid
+        ctx, pid = _CONTEXT_CALLS[-1]
+        assert pid == aid and "SPY 50.0%" in ctx
+
+    def test_run_without_portfolio_has_no_context(self, pclient):
+        client, _, _ = pclient
+        _CONTEXT_CALLS.clear()
+        run_id = client.post("/api/runs", json={"question": "Q?"}).json()["run_id"]
+        _wait_for_done(client, run_id)
+        assert _CONTEXT_CALLS[-1] == ("", "")
+
+    def test_unknown_portfolio_404(self, pclient):
+        client, _, _ = pclient
+        resp = client.post(
+            "/api/runs", json={"question": "Q?", "portfolio_id": "0123456789ab"}
+        )
+        assert resp.status_code == 404
+        assert "re-analyse" in resp.json()["detail"]
+
+    def test_malformed_portfolio_id_422(self, pclient):
+        client, _, _ = pclient
+        resp = client.post(
+            "/api/runs", json={"question": "Q?", "portfolio_id": "../etc"}
+        )
+        assert resp.status_code == 422

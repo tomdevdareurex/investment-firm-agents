@@ -31,26 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".venv/Scripts/python.exe -c \"import sys,json,os; d=json.load(sys.stdin); b=os.path.basename(d.get('tool_input',{}).get('file_path','')); (b=='.env' or (b.startswith('.env.') and b!='.env.example')) and print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Blocked: .env files contain API credentials'}}))\"",
+            "command": ".venv/Scripts/python.exe .claude/hooks/block_env.py",
             "statusMessage": "Checking for .env edit"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:\\Users\\wn686\\OneDrive - Deutsche B\u00f6rse AG\\Desktop\\REPOs\\investment-firm-agents\\.venv\\Scripts\\graphify.exe\" hook-guard search"
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"C:\\Users\\wn686\\OneDrive - Deutsche B\u00f6rse AG\\Desktop\\REPOs\\investment-firm-agents\\.venv\\Scripts\\graphify.exe\" hook-guard read"
           }
         ]
       }
@@ -61,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".venv/Scripts/python.exe -c \"import sys,json,subprocess; d=json.load(sys.stdin); f=d.get('tool_input',{}).get('file_path',''); f.endswith('.py') and subprocess.run([sys.executable,'-m','black','-q','-t','py312',f])\" 2>/dev/null || true",
+            "command": ".venv/Scripts/python.exe .claude/hooks/format_py.py",
             "statusMessage": "Formatting with black"
           }
         ]

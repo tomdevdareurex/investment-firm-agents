@@ -33,6 +33,7 @@ def plan_roles(
     planner_spec: RoleSpec,
     *,
     tracker: Optional[RunTracker] = None,
+    user_context: str = "",
 ) -> List[str]:
     """Return an ordered list of role names to run, chosen by the planner model."""
     catalogue = "\n".join(
@@ -52,6 +53,12 @@ def plan_roles(
         user += (
             "\n\nHint: short horizon — technical, sentiment and news analysts "
             "are relevant."
+        )
+    if user_context:
+        user += (
+            "\n\nThe user holds the portfolio below and the question is about it. "
+            "Pick analysts relevant to these holdings (asset classes, FX exposure):\n"
+            + user_context
         )
     messages = [
         {"role": "system", "content": _PLANNER_SYSTEM},

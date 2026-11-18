@@ -110,6 +110,53 @@ class TestSynthesize:
         assert rec == "ERROR" and fake.calls == []
 
 
+class TestSynthesisFallback:
+    def _synth(self, tracker=None):
+        return _synthesize(
+            "Q?",
+            "briefing",
+            _VIEWS,
+            _CIO,
+            tracker or RunTracker(),
+            fallback_model="gpt-5.6-terra",
+        )
+
+    def test_api_error_falls_back_to_other_model(self, fake_llm):
+        llm = fake_llm([{"error": {"message": "boom"}}, openai_text(_OK)])
+        s = self._synth()
+        assert s.recommendation == "BUY"
+        assert s.model == "gpt-5.6-terra"
+        assert llm.calls[1][0] == "gpt-5.6-terra"
+        assert "fallback model gpt-5.6-terra" in s.note
+        assert "API error: boom" in s.note
+
+    def test_unparseable_falls_back(self, fake_llm):
+        fake_llm([openai_text("prose"), openai_text("prose"), openai_text(_OK)])
+        s = self._synth()
+        assert s.recommendation == "BUY" and s.model == "gpt-5.6-terra"
+        assert "unparseable JSON" in s.note
+
+    def test_empty_reason_reported(self, fake_llm):
+        fake_llm([openai_text(""), openai_text("")])
+        s = _synthesize("Q?", "b", _VIEWS, _CIO, RunTracker())
+        assert s.recommendation == "ERROR"
+        assert s.reason == "empty response"
+
+    def test_both_fail_keeps_error_with_note(self, fake_llm):
+        fake_llm([{"error": {"message": "a"}}, {"error": {"message": "b"}}])
+        s = self._synth()
+        assert s.recommendation == "ERROR"
+        assert "also failed" in s.note
+
+    def test_no_fallback_when_budget_exhausted(self, monkeypatch):
+        fake = FakeLLM([])
+        monkeypatch.setattr("investment_firm.llm.client.chat", fake)
+        s = self._synth(RunTracker(token_budget=500))
+        assert s.recommendation == "ERROR"
+        assert s.reason == "token budget exhausted"
+        assert fake.calls == []
+
+
 class TestSalvageSynthesis:
     def test_requires_a_literal_recommendation(self):
         assert _salvage_synthesis('{"summary": "no rec here') is None
@@ -158,6 +205,18 @@ class TestParseSynthesis:
         assert "not a finance professional" in prompt
         assert '"headline"' in prompt and '"what_to_watch"' in prompt
         assert "never advise executing orders" in prompt
+
+    def test_vote_text_reaches_prompt_only_when_given(self, fake_llm):
+        llm = fake_llm([openai_text(_OK), openai_text(_OK)])
+        _synthesize("Q?", "b", _VIEWS, _CIO, RunTracker())
+        system, user = llm.calls[0][1][0]["content"], llm.calls[0][1][1]["content"]
+        assert "Committee vote" not in user and "vote" not in system.lower()
+        _synthesize(
+            "Q?", "b", _VIEWS, _CIO, RunTracker(), vote_text="Outcome: TIE"
+        )
+        system, user = llm.calls[1][1][0]["content"], llm.calls[1][1][1]["content"]
+        assert "Committee vote (advisory):\nOutcome: TIE" in user
+        assert "vote" in system.lower()
 
 
 class TestLibrarianProseFallback:

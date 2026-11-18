@@ -11,24 +11,27 @@ any brokerage or order system, and its output is not investment advice.
 
 ## Install (Windows, AppLocker-safe)
 
-
-Full:
-.venv\Scripts\python.exe -m pip install -e ".[data,embed,api,databricks,openbb,dev]"
-```
-.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app --host 127.0.0.1 --port 8000
-
 AppLocker blocks `pip.exe` shims — always go through `python.exe -m`:
 
 ```bat
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[data,api,dev,databricks,openbb]"
+```
 
+Optional, heavy (~1 GB CPU torch): `.venv\Scripts\python.exe -m pip install -e ".[forecast]"`
+for the TimesFM forecast cone; without it the random-walk baseline is used.
+
+Start the web UI:
+
+```bat
+.venv\Scripts\python.exe -m uvicorn investment_firm.interfaces.web.app:app --host 127.0.0.1 --port 8000
+```
 
 Extras: `data` = yfinance/pandas (market data), `api` = FastAPI/uvicorn (web UI),
-`dev` = pytest/jupyter, `embed` = embeddings memory (M3, not needed yet),
-`databricks` = second LLM backend (databricks-sdk), `openbb` = extra market-data
-tools — Treasury yield curve, options summary, monthly CPI (auto-enabled when
-installed; AGPLv3, local/personal use). Drop any extra you don't need.
+`dev` = pytest/jupyter, `databricks` = second LLM backend (databricks-sdk),
+`openbb` = extra market-data tools — Treasury yield curve, options summary,
+monthly CPI (auto-enabled when installed; AGPLv3, local/personal use),
+`forecast` = TimesFM 2.5 quantile forecast. Drop any extra you don't need.
 
 ## Configure
 

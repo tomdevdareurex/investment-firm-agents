@@ -168,3 +168,35 @@ def profile_setting(
     firm = firm or load_firm()
     profile_name = resolve_profile(profile, firm)
     return firm["profiles"][profile_name].get(key, default)
+
+
+_TIER_ORDER = ("WORKER", "SENIOR", "AUTHORITY", "HEAD")
+
+
+def fallback_model_for(
+    spec: RoleSpec,
+    *,
+    profile: Optional[str] = None,
+    firm: Optional[dict] = None,
+) -> Optional[str]:
+    """Return a different model to retry a failed seat with, or ``None``.
+
+    Looks in the role's own tier first, then the nearest tiers (lower before
+    higher). ``None`` when ``fallback_on_error`` is off or no other model exists.
+    """
+    firm = firm or load_firm()
+    profile_name = resolve_profile(profile, firm)
+    profile_cfg = firm["profiles"][profile_name]
+    if not profile_cfg.get("fallback_on_error", True):
+        return None
+    if spec.tier in _TIER_ORDER:
+        idx = _TIER_ORDER.index(spec.tier)
+        order = sorted(range(len(_TIER_ORDER)), key=lambda i: (abs(i - idx), i > idx))
+        tiers = [_TIER_ORDER[i] for i in order]
+    else:
+        tiers = [spec.tier, *_TIER_ORDER]
+    for tier in tiers:
+        for model in profile_cfg.get(tier) or []:
+            if model != spec.model:
+                return model
+    return None

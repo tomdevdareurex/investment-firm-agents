@@ -52,6 +52,8 @@ class TestStepEvents:
         # simple mode skips the librarian briefing and the debate.
         assert events.BRIEFING_STARTED not in kinds
         assert events.DEBATE_TURN not in kinds
+        assert events.VOTE_DONE not in kinds  # vote only in the full committee
+        assert events.CROSS_CHECK_DONE not in kinds  # premium full committee only
         # analyst_started always precedes its matching analyst_done.
         assert kinds.index(events.ANALYST_STARTED) < kinds.index(events.ANALYST_DONE)
         # synthesis happens after the last analyst finishes.

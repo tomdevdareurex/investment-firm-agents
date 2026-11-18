@@ -36,7 +36,7 @@ from ..llm.utils import (
 )
 from . import events
 from .schemas import Memo
-from .tools import ToolRegistry, default_data_tools
+from .tools import ToolRegistry, default_data_tools, default_forecast_tools
 
 # Default high-reasoning model; override with IFA_CONSULTANT_MODEL.
 DEFAULT_CONSULTANT_MODEL = "claude-5.5-opus"
@@ -51,6 +51,10 @@ CONSULTANT_TOOL_NAMES = frozenset(
         "run_strategy_backtest",
     }
 )
+
+# Read-only tools that only exist when an optional extra is installed
+# (``.[forecast]``); included in the registry when available.
+OPTIONAL_CONSULTANT_TOOL_NAMES = frozenset({"forecast_quantiles"})
 
 _MAX_STEPS = 4
 _MAX_TOKENS = 1200
@@ -71,13 +75,18 @@ _SYSTEM = (
     "does not contain something, say so rather than inventing it.\n"
     "- A 'backtest' here is a read-only historical computation only.\n\n"
     "You may call these read-only tools when useful: get_prices, get_indicators, "
-    "compute_risk_metrics, run_backtest. Answer in clear prose (not JSON)."
+    "compute_risk_metrics, run_backtest, run_strategy_backtest and, when listed, "
+    "forecast_quantiles (an experimental zero-shot quantile cone — treat it as one "
+    "scenario input, never as a prediction). Answer in clear prose (not JSON)."
 )
 
 
 def consultant_registry() -> ToolRegistry:
     """Build the consultant's read-only tool registry by filtering the catalog."""
     tools = [t for t in default_data_tools() if t.name in CONSULTANT_TOOL_NAMES]
+    tools += [
+        t for t in default_forecast_tools() if t.name in OPTIONAL_CONSULTANT_TOOL_NAMES
+    ]
     return ToolRegistry(tools)
 
 

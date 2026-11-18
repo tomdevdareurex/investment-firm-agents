@@ -185,6 +185,51 @@ def _get(analysis_id: str) -> Dict[str, Any]:
     return entry
 
 
+def _fmt(value: Any, suffix: str = "") -> str:
+    return "n/a" if value is None else f"{value}{suffix}"
+
+
+def portfolio_context(analysis_id: str) -> str:
+    """Plain-text summary of a stored analysis for a committee run (404 if unknown)."""
+    entry = _get(analysis_id)
+    d = build_digest(entry)
+    stats = d.get("stats") or {}
+    window = d.get("window") or {}
+    lines = [
+        "Holdings: "
+        + ", ".join(f"{p['ticker']} {p['weight_pct']}%" for p in d["positions"]),
+        f"Analysis window: {window.get('start', 'n/a')} to {window.get('end', 'n/a')}; "
+        f"benchmark {d.get('benchmark') or 'n/a'}",
+        f"Total return {_fmt(stats.get('total_return_pct'), '%')}, "
+        f"CAGR {_fmt(stats.get('cagr_pct'), '%')}, "
+        f"volatility {_fmt(stats.get('ann_vol_pct'), '%')}, "
+        f"max drawdown {_fmt(stats.get('max_drawdown_pct'), '%')}, "
+        f"Sharpe {_fmt(stats.get('sharpe'))}, beta {_fmt(stats.get('beta'))}",
+    ]
+    for mode, s in (d.get("rebalance_comparison") or {}).items():
+        if s:
+            lines.append(
+                f"Rebalancing {mode}: CAGR {_fmt(s['cagr_pct'], '%')}, "
+                f"vol {_fmt(s['ann_vol_pct'], '%')}, "
+                f"max drawdown {_fmt(s['max_drawdown_pct'], '%')}, "
+                f"Sharpe {_fmt(s['sharpe'])}"
+            )
+    for o in d.get("strategy_overlays") or []:
+        lines.append(
+            f"Strategy overlay {o['strategy']}: CAGR {_fmt(o['cagr_pct'], '%')}, "
+            f"max drawdown {_fmt(o['max_drawdown_pct'], '%')}, "
+            f"Sharpe {_fmt(o['sharpe'])}"
+        )
+    div = d.get("diversification") or {}
+    lines.append(
+        f"Diversification: effective holdings {_fmt(div.get('effective_n'))}, "
+        f"average correlation {_fmt(div.get('avg_pairwise_corr'))}"
+    )
+    lines.extend(f"Data warning: {w}" for w in d.get("warnings") or [])
+    lines.append(f"(analysis {analysis_id}, computed {entry['generated_at']})")
+    return "\n".join(lines)
+
+
 def _public(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "analysis_id": entry["analysis_id"],

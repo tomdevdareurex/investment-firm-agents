@@ -13,6 +13,12 @@ data:
   alphavantage:    "https://www.alphavantage.co/query"
   reddit_token:    "https://www.reddit.com/api/v1/access_token"
   reddit_search:   "https://oauth.reddit.com/r/{subreddit}/search"
+  # Free, keyless alt-data (QuiverQuant substitutes): government contracts, lobbying,
+  # insider Form 4 filings. SEC endpoints need a descriptive User-Agent (SEC_USER_AGENT).
+  usaspending_awards: "https://api.usaspending.gov/api/v2/search/spending_by_award/"
+  senate_lda_filings: "https://lda.senate.gov/api/v1/filings/"
+  edgar_fts:          "https://efts.sec.gov/LATEST/search-index"
+  edgar_archives:     "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/"
 
 prediction_markets:
   # Primary: real-money, CFTC-regulated exchange. Keyless public market data.

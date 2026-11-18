@@ -975,3 +975,174 @@ class TestRunsWarnings:
                 warnings.append(f"{view.role}: API error — {risk}")
 
         assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Evidence-based repair + fallback model
+# ---------------------------------------------------------------------------
+
+
+def _tool_registry_with(result: str = '{"price": 101.5}') -> ToolRegistry:
+    return ToolRegistry(
+        [Tool("get_data", "desc", {"type": "object", "properties": {}}, lambda: result)]
+    )
+
+
+class TestRecoveryFromFailedAnswers:
+    def test_empty_answer_after_tools_is_repaired_from_tool_results(self, fake_llm):
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),
+                openai_text(""),  # model returns nothing
+                openai_text(""),  # finalization call: still nothing
+                openai_text(_clean_json()),  # repair from tool results
+            ]
+        )
+        agent = Agent(_spec(), tools=_tool_registry_with(), max_steps=3)
+        view = agent.run("Buy AAPL?")
+
+        assert view.stance == "BULLISH"
+        llm.assert_call_count(4)
+        repair_user = llm.calls[3][1][1]["content"]
+        assert "TOOL RESULTS" in repair_user
+        assert "101.5" in repair_user
+        assert "Buy AAPL?" in repair_user
+
+    def test_stub_prose_after_tool_loop_uses_tool_results(self, fake_llm):
+        stub = "Now let me run a backtest. [called tools: run_backtest]"
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),
+                openai_tool_call("get_data", {}),  # still tool-calling at last step
+                openai_text(stub),  # finalization: stub prose
+                openai_text(_clean_json()),  # repair
+            ]
+        )
+        agent = Agent(_spec(), tools=_tool_registry_with(), max_steps=2)
+        view = agent.run("Q?")
+
+        assert view.stance == "BULLISH"
+        assert "101.5" in llm.calls[3][1][1]["content"]
+
+    def test_empty_answer_without_evidence_skips_repair(self, fake_llm):
+        llm = fake_llm([openai_text("")])
+        view = Agent(_spec(), tools=None).run("Q?")
+        llm.assert_call_count(1)
+        assert view.stance == "ERROR"
+        assert "empty response" in view.error
+        assert "FAILURE REASON: empty response" in view.key_risks
+
+    def test_fallback_model_answers_when_primary_fails(self, fake_llm):
+        llm = fake_llm(
+            [
+                openai_text(""),  # primary: empty, no evidence → no repair
+                openai_text(_clean_json()),  # fallback model
+            ]
+        )
+        agent = Agent(
+            _spec(model="gemini-3.8-flash"), fallback_model="claude-4.5-haiku"
+        )
+        view = agent.run("Q?")
+
+        assert view.stance == "BULLISH"
+        assert view.model == "claude-4.5-haiku"
+        assert llm.calls[1][0] == "claude-4.5-haiku"
+        assert not llm.calls[1][2].get("tools")
+        assert any(
+            r.startswith("FALLBACK: answered by claude-4.5-haiku")
+            and "empty response" in r
+            for r in view.key_risks
+        )
+
+    def test_fallback_after_failed_repair_gets_tool_results(self, fake_llm):
+        llm = fake_llm(
+            [
+                openai_tool_call("get_data", {}),
+                openai_text("prose only"),
+                openai_text("still prose"),  # repair fails
+                openai_text(_clean_json()),  # fallback
+            ]
+        )
+        agent = Agent(
+            _spec(), tools=_tool_registry_with(), max_steps=3, fallback_model="other-m"
+        )
+        view = agent.run("Q?")
+        assert view.stance == "BULLISH"
+        assert view.grounded is True
+        assert "101.5" in llm.calls[3][1][1]["content"]
+
+    def test_fallback_on_api_error(self, fake_llm):
+        llm = fake_llm([{"error": {"message": "boom"}}, openai_text(_clean_json())])
+        agent = Agent(_spec(), tools=None, fallback_model="other-m")
+        view = agent.run("Q?")
+        assert view.stance == "BULLISH"
+        assert any("API error: boom" in r for r in view.key_risks)
+
+    def test_failed_fallback_still_yields_error_view(self, fake_llm):
+        fake_llm([openai_text(""), openai_text("not json")])
+        agent = Agent(_spec(), fallback_model="other-m")
+        view = agent.run("Q?")
+        assert view.stance == "ERROR"
+        assert any("fallback to other-m" in n for n in agent.memory.notes)
+
+    def test_no_fallback_when_budget_forbids(self, fake_llm):
+        llm = fake_llm([openai_text("")])
+        tracker = RunTracker(token_budget=100)
+        view = Agent(_spec(), max_tokens=10, fallback_model="other-m").run(
+            "Q?", tracker=tracker
+        )
+        llm.assert_call_count(1)
+        assert view.stance == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# User portfolio context
+# ---------------------------------------------------------------------------
+
+_PORTFOLIO_CTX = "Holdings: EUNL.DE 80.0%, GLD 20.0%"
+
+
+class TestUserPortfolioContext:
+    def _run(self, fake_llm, monkeypatch, **kwargs):
+        llm = fake_llm(
+            [
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_VIEW),
+                openai_text(_SYNTH),
+            ]
+        )
+        monkeypatch.setenv("AI_PLAYGROUND_API_KEY", "test-key")
+        memo, _ = run_committee(
+            "Keep monthly rebalancing?", profile="budget", simple=True, **kwargs
+        )
+        return llm, memo
+
+    def test_context_reaches_analysts_and_cio(self, fake_llm, monkeypatch):
+        llm, memo = self._run(
+            fake_llm,
+            monkeypatch,
+            user_context=_PORTFOLIO_CTX,
+            portfolio_id="abc123abc123",
+        )
+        for _, messages, _ in llm.calls:
+            assert _PORTFOLIO_CTX in messages[-1]["content"]
+        assert "USER PORTFOLIO" in memo.briefing
+        assert memo.portfolio_id == "abc123abc123"
+        assert memo.sources[0].startswith("user_context: uploaded portfolio analysis")
+
+    def test_no_context_leaves_run_unchanged(self, fake_llm, monkeypatch):
+        llm, memo = self._run(fake_llm, monkeypatch)
+        assert memo.briefing == ""
+        assert memo.portfolio_id == ""
+        assert not any("USER PORTFOLIO" in m[-1]["content"] for _, m, _ in llm.calls)
+
+    def test_planner_sees_holdings(self, fake_llm):
+        llm = fake_llm([openai_text('{"plan": ["equity_analyst"], "reasoning": "x"}')])
+        plan_roles("Q?", [_spec()], _spec("cio"), user_context=_PORTFOLIO_CTX)
+        assert _PORTFOLIO_CTX in llm.calls[0][1][-1]["content"]
+
+    def test_planner_without_context_has_no_hint(self, fake_llm):
+        llm = fake_llm([openai_text('{"plan": ["equity_analyst"], "reasoning": "x"}')])
+        plan_roles("Q?", [_spec()], _spec("cio"))
+        assert "The user holds the portfolio" not in llm.calls[0][1][-1]["content"]

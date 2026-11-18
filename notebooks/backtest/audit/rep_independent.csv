@@ -1,0 +1,21 @@
+item,period,original,independent,diff,within_tol
+bench sma200,dev,0.6437,0.6437,0.0,True
+bench sma200,val,0.5722,0.5722,0.0,True
+bench sma200,holdout,0.6575,0.6569,-0.0006,True
+bench sma200,full,0.6297,0.6296,-0.0001,True
+bench bh,dev,0.511,0.511,0.0,True
+bench bh,val,0.319,0.319,0.0,True
+bench bh,holdout,0.7808,0.7803,-0.0004,True
+bench bh,full,0.5133,0.5132,-0.0001,True
+S06 tom,dev,0.9603,0.9603,0.0,True
+S06 tom,val,0.3352,0.3352,-0.0,True
+S06 tom,holdout,0.2506,0.2506,0.0,True
+S06 tom,full,0.6685,0.6685,0.0,True
+S10 avg,dev,0.6907,0.6907,-0.0,True
+S10 avg,val,0.5549,0.5549,-0.0,True
+S10 avg,holdout,0.7601,0.7596,-0.0005,True
+S10 avg,full,0.675,0.6749,-0.0001,True
+S09 ratio<0.95,dev,0.7225,0.7225,-0.0,True
+S09 ratio<0.95,val,0.3352,0.3352,0.0,True
+S09 ratio<0.95,holdout,0.5595,0.5583,-0.0012,True
+S09 ratio<0.95,full,0.5713,0.5707,-0.0006,True

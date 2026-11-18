@@ -1201,7 +1201,13 @@ _REDDIT_TOOL = Tool(
 
 
 def default_data_tools() -> List[Tool]:
-    """Return the free read-only data tools (enabled set from firm.yaml defaults)."""
+    """Return the free read-only data tools (enabled set from firm.yaml defaults).
+
+    Includes the keyless alt-data tools from :mod:`altdata_free` (government
+    contracts, lobbying, Form 4 insider filings) — imported lazily to avoid a cycle.
+    """
+    from .altdata_free import default_altdata_tools
+
     return [
         _PRICES_TOOL,
         _INDICATORS_TOOL,
@@ -1216,4 +1222,4 @@ def default_data_tools() -> List[Tool]:
         _STOCKTWITS_TOOL,
         _AV_OVERVIEW_TOOL,
         _REDDIT_TOOL,
-    ]
+    ] + default_altdata_tools()
